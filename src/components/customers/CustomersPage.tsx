@@ -13,12 +13,6 @@ import { customersApi } from '../../api/customers.api'
 /*  Phone normalization                                                */
 /* ------------------------------------------------------------------ */
 
-/**
- * Normalizes Ethiopian phone numbers to E.164.
- * Accepts: +2519XXXXXXXX / +2517XXXXXXXX, 2519… / 2517…,
- *          09XXXXXXXX / 07XXXXXXXX, with optional spaces, dashes, parens.
- * Returns null if the input doesn't match any accepted format.
- */
 function normalizePhone(raw: string): string | null {
   const cleaned = raw.replace(/[\s\-()]/g, '')
   if (!cleaned) return null
@@ -78,7 +72,6 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
   }
 
   useEffect(() => {
-    // Debounce so typing doesn't fire a request per keystroke.
     const t = setTimeout(() => { void refresh() }, search ? 300 : 0)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -99,7 +92,7 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
 
   function openDetail(c: Customer) {
     setSelectedId(c.id)
-    setSelectedDetail(c)     // optimistic — list row renders instantly
+    setSelectedDetail(c)
     setActiveTab('overview')
     void loadDetail(c.id)
   }
@@ -144,11 +137,6 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
     }
   }
 
-  /**
-   * §3.3 — PATCH /customers/:customerId only supports firstName/lastName
-   * today. Notes are not part of the customer record per the guide, so
-   * this is a local-only stub until a notes field lands server-side.
-   */
   async function saveNotes(_notes: string) {
     if (!selectedDetail) return
     toast.success('Saved locally only — server-side notes are not yet supported.')
@@ -158,7 +146,6 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
   /*  Derived                                                         */
   /* ---------------------------------------------------------------- */
 
-  // Belt-and-braces client filter — the server already filters on `q`.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return customers
@@ -169,9 +156,6 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
     })
   }, [customers, search])
 
-  // Per-customer stats derived from `appointments`. The API doesn't
-  // expose visitCount / totalSpent / lastVisit on the Customer record,
-  // so we compute them once for the whole list.
   const statsFor = useMemo(() => {
     const byCustomer = new Map<string, {
       visitCount: number
@@ -219,7 +203,7 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
 
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        <div className="px-8 py-5 bg-surface border-b border-line flex-shrink-0">
+        <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-5 bg-surface border-b border-line flex-shrink-0">
           <button
             onClick={closeDetail}
             className="flex items-center gap-2 text-sm text-ink-3 hover:text-ink transition-colors mb-5"
@@ -230,37 +214,39 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
             All customers
           </button>
 
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-4 min-w-0">
               <Avatar name={displayName} size="lg" />
-              <div>
-                <h2 className="font-display text-2xl text-ink">{displayName}</h2>
-                <p className="text-ink-3 text-sm mt-0.5">{primaryPhone ?? '—'}</p>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <h2 className="font-display text-xl sm:text-2xl text-ink truncate">{displayName}</h2>
+                  {selectedDetail.status === 'ARCHIVED' && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-line text-ink-3 font-medium flex-shrink-0">
+                      Archived
+                    </span>
+                  )}
+                </div>
+                <p className="text-ink-3 text-sm mt-0.5 truncate">{primaryPhone ?? '—'}</p>
               </div>
-              {selectedDetail.status === 'ARCHIVED' && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-line text-ink-3 font-medium">
-                  Archived
-                </span>
-              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-6 mt-5 pt-5 border-t border-line">
+          <div className="flex items-center gap-4 sm:gap-6 mt-5 pt-5 border-t border-line overflow-x-auto">
             <Stat label="Visits"      value={String(stat?.visitCount ?? 0)} />
-            <div className="w-px h-8 bg-line" />
+            <div className="w-px h-8 bg-line flex-shrink-0" />
             <Stat label="Total spent" value={`${(stat?.totalSpent ?? 0).toLocaleString()} ETB`} />
-            <div className="w-px h-8 bg-line" />
+            <div className="w-px h-8 bg-line flex-shrink-0" />
             <Stat label="Outstanding" value="—" />
-            <div className="w-px h-8 bg-line" />
+            <div className="w-px h-8 bg-line flex-shrink-0" />
             <Stat label="Last visit"  value={stat?.lastVisit ?? 'Never'} />
           </div>
 
-          <div className="flex gap-1 mt-5">
+          <div className="flex gap-1 mt-5 overflow-x-auto">
             {(['overview', 'appointments', 'feedback', 'notes'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`h-8 px-4 text-xs font-medium rounded-xl transition-colors capitalize ${
+                className={`h-8 px-4 text-xs font-medium rounded-xl transition-colors capitalize whitespace-nowrap ${
                   activeTab === tab
                     ? 'bg-ink text-surface'
                     : 'text-ink-3 hover:text-ink hover:bg-warm-subtle'
@@ -272,7 +258,7 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-8 py-6">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6">
           {detailLoading && (
             <p className="text-xs text-ink-3 mb-4">Refreshing…</p>
           )}
@@ -284,14 +270,14 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
                   <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
                     Upcoming appointment
                   </p>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-ink">{stat.upcoming.serviceName}</p>
-                      <p className="text-sm text-ink-3 mt-0.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium text-ink truncate">{stat.upcoming.serviceName}</p>
+                      <p className="text-sm text-ink-3 mt-0.5 truncate">
                         {stat.upcoming.date} · {stat.upcoming.startTime} · {stat.upcoming.branchName}
                       </p>
                     </div>
-                    <span className="text-sm font-semibold text-ink">
+                    <span className="text-sm font-semibold text-ink flex-shrink-0">
                       {Number(stat.upcoming.price).toLocaleString()} ETB
                     </span>
                   </div>
@@ -302,14 +288,14 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
                   <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
                     Last visit
                   </p>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-ink">{custAppts[0].serviceName}</p>
-                      <p className="text-sm text-ink-3 mt-0.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium text-ink truncate">{custAppts[0].serviceName}</p>
+                      <p className="text-sm text-ink-3 mt-0.5 truncate">
                         {custAppts[0].date} · {custAppts[0].staffName} · {custAppts[0].branchName}
                       </p>
                     </div>
-                    <span className="text-sm font-semibold text-ink">
+                    <span className="text-sm font-semibold text-ink flex-shrink-0">
                       {Number(custAppts[0].price).toLocaleString()} ETB
                     </span>
                   </div>
@@ -331,25 +317,29 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
                 custAppts.map(a => (
                   <div
                     key={a.id}
-                    className="bg-surface rounded-xl border border-line px-5 py-3.5 flex items-center gap-4"
+                    className="bg-surface rounded-xl border border-line px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4"
                   >
-                    <div className="w-20 flex-shrink-0">
-                      <p className="text-sm font-medium text-ink">{a.date}</p>
-                      <p className="text-xs text-ink-3">{a.startTime}</p>
+                    <div className="flex items-center gap-3 sm:contents">
+                      <div className="w-20 flex-shrink-0">
+                        <p className="text-sm font-medium text-ink">{a.date}</p>
+                        <p className="text-xs text-ink-3">{a.startTime}</p>
+                      </div>
+                      <div className="hidden sm:block w-px h-8 bg-line flex-shrink-0" />
                     </div>
-                    <div className="w-px h-8 bg-line flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-ink truncate">{a.serviceName}</p>
-                      <p className="text-xs text-ink-3">
+                      <p className="text-xs text-ink-3 truncate">
                         {a.staffName} · {a.branchName}
                       </p>
                     </div>
-                    <span className="text-sm font-semibold text-ink-2 flex-shrink-0">
-                      {Number(a.price).toLocaleString()} ETB
-                    </span>
-                    <span className="text-xs text-ink-3 flex-shrink-0 capitalize">
-                      {a.status.replace('-', ' ')}
-                    </span>
+                    <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-4 flex-shrink-0">
+                      <span className="text-sm font-semibold text-ink-2">
+                        {Number(a.price).toLocaleString()} ETB
+                      </span>
+                      <span className="text-xs text-ink-3 capitalize">
+                        {a.status.replace('-', ' ')}
+                      </span>
+                    </div>
                   </div>
                 ))
               )}
@@ -365,19 +355,19 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
               ) : (
                 custFb.map(f => (
                   <div key={f.id} className="bg-surface rounded-2xl border border-line p-5">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-between mb-2 gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
                         <MiniStars rating={f.overallRating} />
                         <span className="text-sm font-medium text-ink">
                           {f.overallRating.toFixed(1)}
                         </span>
                       </div>
-                      <span className="text-xs text-ink-3">{f.date}</span>
+                      <span className="text-xs text-ink-3 flex-shrink-0">{f.date}</span>
                     </div>
                     {f.comment && (
                       <p className="text-sm text-ink-2 leading-relaxed">"{f.comment}"</p>
                     )}
-                    <p className="text-xs text-ink-3 mt-2">
+                    <p className="text-xs text-ink-3 mt-2 truncate">
                       {f.serviceName} · {f.staffName}
                     </p>
                   </div>
@@ -400,16 +390,17 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="px-8 py-5 bg-surface border-b border-line flex-shrink-0">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h2 className="font-display text-[1.75rem] text-ink leading-none">Customers</h2>
-            <p className="text-ink-3 text-sm mt-1.5">Manage your client relationships.</p>
+      <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-5 bg-surface border-b border-line flex-shrink-0">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
+          <div className="min-w-0">
+            <h2 className="font-display text-xl sm:text-2xl lg:text-[1.75rem] text-ink leading-none">Customers</h2>
+            <p className="text-ink-3 text-xs sm:text-sm mt-1.5">Manage your client relationships.</p>
           </div>
           <Button
             onClick={() => setShowModal(true)}
             size="sm"
             disabled={loading}
+            className="self-start sm:self-auto flex-shrink-0"
           >
             <PlusIcon /> Add Customer
           </Button>
@@ -438,11 +429,11 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
 
       <div className="flex-1 overflow-y-auto">
         {loading && customers.length === 0 ? (
-          <div className="px-8 py-6">
+          <div className="px-4 sm:px-6 lg:px-8 py-6">
             <LoadingState label="Loading customers…" />
           </div>
         ) : filtered.length === 0 ? (
-          <div className="px-8 py-6">
+          <div className="px-4 sm:px-6 lg:px-8 py-6">
             <EmptyState
               icon={<PersonIcon />}
               title={search ? 'No matches' : 'No customers yet'}
@@ -461,48 +452,109 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
             />
           </div>
         ) : (
-          <div className="bg-surface border-b border-line">
-            <div className="grid grid-cols-[1fr_160px_80px_120px_120px_100px] gap-4 px-8 py-3 border-b border-line">
-              {['Customer', 'Phone', 'Visits', 'Last visit', 'Total spent', 'Outstanding'].map(h => (
-                <span
-                  key={h}
-                  className="text-[11px] font-semibold text-ink-3 uppercase tracking-wider"
-                >
-                  {h}
-                </span>
-              ))}
-            </div>
-            {filtered.map(c => {
-              const stat = statsFor.get(c.id)
-              const name = `${c.firstName} ${c.lastName}`.trim()
-              const phone = primaryPhoneOf(c)
-              const isArchived = c.status === 'ARCHIVED'
-              return (
-                <button
-                  key={c.id}
-                  onClick={() => openDetail(c)}
-                  className="grid grid-cols-[1fr_160px_80px_120px_120px_100px] gap-4 px-8 py-4 border-b border-line last:border-0 w-full text-left hover:bg-bg transition-colors items-center group"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <Avatar name={name} size="sm" />
-                    <span className="text-sm font-medium text-ink truncate">{name}</span>
-                    {isArchived && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-line text-ink-3 font-medium flex-shrink-0">
-                        Archived
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-sm text-ink-3">{phone ?? '—'}</span>
-                  <span className="text-sm text-ink-2">{stat?.visitCount ?? 0}</span>
-                  <span className="text-sm text-ink-3">{stat?.lastVisit ?? '—'}</span>
-                  <span className="text-sm font-medium text-ink">
-                    {(stat?.totalSpent ?? 0).toLocaleString()} ETB
+          <>
+            {/* Desktop / tablet: table layout */}
+            <div className="hidden md:block bg-surface border-b border-line">
+              <div className="grid grid-cols-[1fr_160px_80px_120px_120px_100px] gap-4 px-4 sm:px-6 lg:px-8 py-3 border-b border-line">
+                {['Customer', 'Phone', 'Visits', 'Last visit', 'Total spent', 'Outstanding'].map(h => (
+                  <span
+                    key={h}
+                    className="text-[11px] font-semibold text-ink-3 uppercase tracking-wider"
+                  >
+                    {h}
                   </span>
-                  <span className="text-sm font-medium text-ink-3">—</span>
-                </button>
-              )
-            })}
-          </div>
+                ))}
+              </div>
+              {filtered.map(c => {
+                const stat = statsFor.get(c.id)
+                const name = `${c.firstName} ${c.lastName}`.trim()
+                const phone = primaryPhoneOf(c)
+                const isArchived = c.status === 'ARCHIVED'
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => openDetail(c)}
+                    className="grid grid-cols-[1fr_160px_80px_120px_120px_100px] gap-4 px-4 sm:px-6 lg:px-8 py-4 border-b border-line last:border-0 w-full text-left hover:bg-bg transition-colors items-center group"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Avatar name={name} size="sm" />
+                      <span className="text-sm font-medium text-ink truncate">{name}</span>
+                      {isArchived && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-line text-ink-3 font-medium flex-shrink-0">
+                          Archived
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-sm text-ink-3 truncate">{phone ?? '—'}</span>
+                    <span className="text-sm text-ink-2">{stat?.visitCount ?? 0}</span>
+                    <span className="text-sm text-ink-3">{stat?.lastVisit ?? '—'}</span>
+                    <span className="text-sm font-medium text-ink">
+                      {(stat?.totalSpent ?? 0).toLocaleString()} ETB
+                    </span>
+                    <span className="text-sm font-medium text-ink-3">—</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Mobile: stacked cards */}
+            <div className="md:hidden flex flex-col gap-2 px-4 py-4 bg-bg">
+              {filtered.map(c => {
+                const stat = statsFor.get(c.id)
+                const name = `${c.firstName} ${c.lastName}`.trim()
+                const phone = primaryPhoneOf(c)
+                const isArchived = c.status === 'ARCHIVED'
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => openDetail(c)}
+                    className="
+                      w-full text-left bg-surface rounded-2xl border border-line
+                      p-4 active:bg-bg transition-colors
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-3/30
+                    "
+                  >
+                    <div className="flex items-center gap-3 mb-3">
+                      <Avatar name={name} size="md" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-medium text-ink truncate">{name}</p>
+                          {isArchived && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-line text-ink-3 font-medium flex-shrink-0">
+                              Archived
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-ink-3 mt-0.5 truncate">{phone ?? '—'}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between pt-3 border-t border-line">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-ink-3 uppercase tracking-wider">Visits</span>
+                        <span className="text-sm font-semibold text-ink mt-0.5">
+                          {stat?.visitCount ?? 0}
+                        </span>
+                      </div>
+                      <div className="w-px h-7 bg-line" />
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-ink-3 uppercase tracking-wider">Last visit</span>
+                        <span className="text-sm font-medium text-ink-2 mt-0.5">
+                          {stat?.lastVisit ?? '—'}
+                        </span>
+                      </div>
+                      <div className="w-px h-7 bg-line" />
+                      <div className="flex flex-col text-right">
+                        <span className="text-[10px] text-ink-3 uppercase tracking-wider">Total spent</span>
+                        <span className="text-sm font-semibold text-ink mt-0.5">
+                          {(stat?.totalSpent ?? 0).toLocaleString()} ETB
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </>
         )}
       </div>
 
@@ -542,7 +594,6 @@ function AddCustomerModal({
   })
   const [duplicate, setDuplicate] = useState<Customer | null>(null)
 
-  // Reset whenever the modal opens.
   useEffect(() => {
     if (!open) return
     setForm({ firstName: '', lastName: '', phone: '', email: '', dob: '', notes: '' })
@@ -553,8 +604,6 @@ function AddCustomerModal({
   function handlePhoneChange(phone: string) {
     setForm(f => ({ ...f, phone }))
 
-    // Only compare once the input is long enough to be a plausible number.
-    // Normalize both sides so +251…, 251…, and 0… forms all compare equal.
     const normalized = normalizePhone(phone)
     if (!normalized) {
       setDuplicate(null)
@@ -590,7 +639,7 @@ function AddCustomerModal({
 
   return (
     <Modal open={open} onClose={onClose} title="Add Customer" width="max-w-md">
-      <div className="px-6 py-5 flex flex-col gap-4">
+      <div className="px-4 sm:px-6 py-5 flex flex-col gap-4 max-h-[65vh] overflow-y-auto">
         {duplicate && (
           <div className="bg-[#FBF5EA] border border-[#E8D5A8] rounded-xl px-4 py-3">
             <p className="text-sm text-[#7A5F2C] font-medium mb-0.5">
@@ -662,7 +711,7 @@ function AddCustomerModal({
         />
       </div>
 
-      <div className="px-6 pb-6 flex gap-3 justify-end border-t border-line pt-4">
+      <div className="px-4 sm:px-6 pb-5 sm:pb-6 flex gap-2 sm:gap-3 justify-end border-t border-line pt-4">
         <Button variant="ghost" onClick={onClose} disabled={saving}>
           Cancel
         </Button>
@@ -742,7 +791,7 @@ function MiniStars({ rating }: { rating: number }) {
 
 function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div>
+    <div className="flex-shrink-0">
       <p className="text-xs text-ink-3">{label}</p>
       <p
         className="text-base font-semibold mt-0.5"

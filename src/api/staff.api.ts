@@ -1,3 +1,5 @@
+// src/api/staff.api.ts
+
 import { http } from './http';
 import type {
   Staff,
@@ -9,6 +11,7 @@ import type {
   StaffTimeOff,
   StaffTimeOffInput,
   StaffTimeOffUpdateInput,
+  WeeklySchedule,
 } from '../types/api';
 
 /* ------------------------------------------------------------------ */
@@ -79,6 +82,57 @@ export const staffApi = {
     http.patch<Staff>(`/staff/${staffId}/branch`, { branchId }),
 
   /* ---------------------------------------------------------------- */
+  /*  Weekly hours                                                    */
+  /*                                                                  */
+  /*  The staff weekly-hours endpoint uses a DIFFERENT shape than the */
+  /*  branch endpoint (§6.2). What we've learned from the server's    */
+  /*  own validation errors:                                          */
+  /*                                                                  */
+  /*    GET  /staff/{staffId}/weekly-hours                            */
+  /*    PUT  /staff/{staffId}/weekly-hours                            */
+  /*                                                                  */
+  /*    • The PUT body is an OBJECT (not a bare array).               */
+  /*    • It is NOT wrapped in `{ days: [...] }`.                     */
+  /*    • Each day entry uses `dayOfWeek`, `isWorking`, `intervals` — */
+  /*      where `isWorking` is the INVERSE of the branch endpoint's   */
+  /*      `isClosed`, and `intervals` is `[{ start, end }]`.          */
+  /*                                                                  */
+  /*  The wrapper key is not documented — inferred from server error  */
+  /*  messages during integration. The caller (`StaffScheduleTab`)    */
+  /*  currently sends `{ schedule: [...] }`. If the server continues  */
+  /*  to 400 with "Expected object, received array", change that      */
+  /*  wrapper key in the caller; this API function is agnostic about  */
+  /*  the internal shape.                                             */
+  /*                                                                  */
+  /*  GET returns the same shape the PUT expects — a plain array of   */
+  /*  `WeeklySchedule` rows is the normalization target.              */
+  /* ---------------------------------------------------------------- */
+  weeklyHours: {
+    /**
+     * Returns the staff member's weekly schedule. The response may be a
+     * bare array, an object with a wrapper key, or `null` — the caller
+     * normalizes it (see `normalizeWeeklySchedules` in StaffPage).
+     */
+    get: (staffId: string) =>
+      http.get<WeeklySchedule[]>(`/staff/${staffId}/weekly-hours`),
+
+    /**
+     * Full replace of the week. The body shape is:
+     *
+     *   { <wrapperKey>: [ { dayOfWeek, isWorking, intervals: [{ start, end }] }, … ] }
+     *
+     * The wrapper key is not part of this signature — the caller supplies
+     * the full body. Pass `unknown` so the client doesn't bake in an
+     * assumption the server will reject.
+     */
+    put: (staffId: string, input: unknown) =>
+      http.put<WeeklySchedule[]>(
+        `/staff/${staffId}/weekly-hours`,
+        input,
+      ),
+  },
+
+  /* ---------------------------------------------------------------- */
   /*  Qualifications (§13)                                            */
   /* ---------------------------------------------------------------- */
 
@@ -108,7 +162,8 @@ export const staffApi = {
     /**
      * §13.3 — Bearer + Owner/Admin OR branch-manager scope.
      * The service must be ACTIVE and actively assigned to the staff's branch.
-     * 201 on create; if a row exists with the same level → 409, different level → update + 201.
+     * 201 on create; if a row exists with the same level → 409,
+     * different level → update + 201.
      */
     add: (
       staffId: string,
