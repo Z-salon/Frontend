@@ -5,6 +5,8 @@ import type {
   Branch,
   BranchDetail,
   BranchPhone,
+  BookingConfig,
+  BookingConfigPatch,
   WeeklySchedule,
   DateOverride,
   DayOfWeek,
@@ -19,6 +21,7 @@ import { useToast } from '../ui/Toast'
 import { useBusiness } from '../../contexts/BusinessContext'
 import { useBranch } from '../../contexts/BranchContext'
 import { branchesApi } from '../../api/branches.api'
+import { bookingConfigApi } from '../../api/booking-config.api'
 import { staffApi } from '../../api/staff.api'
 import { servicesApi } from '../../api/services.api'
 import { serviceCategoriesApi } from '../../api/service-categories.api'
@@ -45,11 +48,6 @@ const DEFAULT_SCHEDULES: WeeklySchedule[] = DAY_LABELS.map((_, i) => ({
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-/**
- * Normalizes Ethiopian phone numbers to E.164.
- * Accepts +2519XXXXXXXX, +2517XXXXXXXX, 2519..., 2517..., 09XXXXXXXX, 07XXXXXXXX.
- * Returns null if the input doesn't match any accepted format.
- */
 function normalizePhone(raw: string): string | null {
   const cleaned = raw.replace(/[\s\-()]/g, '')
   if (!cleaned) return null
@@ -62,7 +60,7 @@ function normalizePhone(raw: string): string | null {
   return null
 }
 
-type Tab = 'info' | 'hours' | 'overrides' | 'phones' | 'staff' | 'services'
+type Tab = 'info' | 'hours' | 'overrides' | 'booking' | 'phones' | 'staff' | 'services'
 
 /* ------------------------------------------------------------------ */
 /*  Page                                                               */
@@ -71,8 +69,6 @@ type Tab = 'info' | 'hours' | 'overrides' | 'phones' | 'staff' | 'services'
 export function BranchesPage() {
   const toast = useToast()
   const { activeBusinessId } = useBusiness()
-  // Branch context: read the active filter and optionally refresh the
-  // context's own list after a mutation. Mirrors StaffPage.
   const { activeBranchFilter } = useBranch()
 
   const [branches,   setBranches]   = useState<Branch[]>([])
@@ -89,17 +85,8 @@ export function BranchesPage() {
   const [showModal, setShowModal] = useState(false)
   const [editing,   setEditing]   = useState<Branch | null>(null)
 
-  /**
-   * View transition state, mirrors StaffPage.
-   * - `view` picks which screen is mounted.
-   * - `detailVisible` drives the detail's enter/exit animation.
-   */
   const [view, setView] = useState<'list' | 'detail'>('list')
   const [detailVisible, setDetailVisible] = useState(false)
-
-  /* ---------------------------------------------------------------- */
-  /*  Data loading                                                    */
-  /* ---------------------------------------------------------------- */
 
   async function refresh() {
     if (!activeBusinessId) return
@@ -133,10 +120,6 @@ export function BranchesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBusinessId, activeBranchFilter])
 
-  /**
-   * Close the detail panel if the currently-selected branch is no longer
-   * in the filtered list. Mirrors StaffPage's equivalent guard.
-   */
   useEffect(() => {
     if (!selected) return
     if (!loading && !branches.some(b => b.id === selected.id)) {
@@ -145,10 +128,6 @@ export function BranchesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBranchFilter, loading])
 
-  /**
-   * Keep `selected` in sync with the latest list row after refresh().
-   * Prevents stale snapshots from being used in PATCH calls.
-   */
   useEffect(() => {
     if (!selected) return
     const fresh = branches.find(b => b.id === selected.id)
@@ -158,10 +137,6 @@ export function BranchesPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branches])
-
-  /* ---------------------------------------------------------------- */
-  /*  Detail transitions                                              */
-  /* ---------------------------------------------------------------- */
 
   async function openDetail(branch: Branch) {
     setSelected(branch)
@@ -174,7 +149,6 @@ export function BranchesPage() {
     try {
       const d = await branchesApi.get(activeBusinessId!, branch.id)
       setDetail(d)
-      // Server is source of truth for phones; keep list in sync.
       setBranches(prev =>
         prev.map(b => (b.id === d.id ? { ...b, phones: d.phones } : b)),
       )
@@ -194,10 +168,6 @@ export function BranchesPage() {
       setDetail(null)
     }, 220)
   }
-
-  /* ---------------------------------------------------------------- */
-  /*  Actions                                                         */
-  /* ---------------------------------------------------------------- */
 
   function openAdd() {
     setEditing(null)
@@ -235,18 +205,12 @@ export function BranchesPage() {
       toast.success(existingId ? 'Branch updated' : 'Branch added')
       setShowModal(false)
       await refresh()
-      // Keep the context's own branch list (used by the header filter
-      // selector and other pages) in sync.
     } catch (err) {
       console.error('[branches] save failed', err)
       toast.error(extractErrorMessage(err, 'Could not save the branch.'))
     }
   }
 
-  /**
-   * Always operate on the freshest copy of the branch from `branches`,
-   * never on a stale `selected` snapshot.
-   */
   async function toggleStatus() {
     if (!selected || !activeBusinessId) return
     const current = branches.find(b => b.id === selected.id) ?? selected
@@ -266,29 +230,18 @@ export function BranchesPage() {
     }
   }
 
-  /* ---------------------------------------------------------------- */
-  /*  Derived                                                         */
-  /* ---------------------------------------------------------------- */
-
-  // Staff whose home branch is this one (§12 — `Staff.branchId`)
   function staffFor(branchId: string) {
     return staff.filter(m => m.branchId === branchId)
   }
 
-  // Services actively assigned to this branch (§9 — `Service.branchAssignments[]`)
   function servicesFor(branchId: string) {
     return services.filter(s =>
       (s.branchAssignments ?? []).some(a => a.branchId === branchId && a.isActive),
     )
   }
 
-  /* ---------------------------------------------------------------- */
-  /*  Render                                                          */
-  /* ---------------------------------------------------------------- */
-
   return (
     <div className="relative h-full overflow-hidden">
-      {/* List view — always visible when mounted. No exit animation. */}
       {view === 'list' && (
         <div className="flex flex-col h-full overflow-hidden">
           <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-5 bg-surface border-b border-line flex-shrink-0">
@@ -385,7 +338,6 @@ export function BranchesPage() {
         </div>
       )}
 
-      {/* Detail view — slides in from the right, fades out on close. */}
       {view === 'detail' && selected && (
         <div
           className={`
@@ -422,7 +374,6 @@ export function BranchesPage() {
         </div>
       )}
 
-      {/* Single modal — mounted in both views. */}
       <BranchFormModal
         open={showModal}
         onClose={() => setShowModal(false)}
@@ -484,7 +435,7 @@ function BranchDetailView({
     [allCategories, branch.id],
   )
 
-  const tabs: Tab[] = ['info', 'hours', 'overrides', 'phones', 'staff', 'services']
+  const tabs: Tab[] = ['info', 'hours', 'overrides', 'booking', 'phones', 'staff', 'services']
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -540,7 +491,7 @@ function BranchDetailView({
               onClick={() => setActiveTab(tab)}
               className={`h-8 px-4 text-xs font-medium rounded-xl transition-colors capitalize whitespace-nowrap ${activeTab === tab ? 'bg-ink text-surface' : 'text-ink-3 hover:text-ink hover:bg-warm-subtle'}`}
             >
-              {tab}
+              {tab === 'booking' ? 'Booking' : tab}
             </button>
           ))}
         </div>
@@ -584,6 +535,13 @@ function BranchDetailView({
           )
         )}
 
+        {activeTab === 'booking' && (
+          <BookingConfigEditor
+            businessId={branch.businessId}
+            branchId={branch.id}
+          />
+        )}
+
         {activeTab === 'phones' && (
           <PhonesEditor
             businessId={branch.businessId}
@@ -621,10 +579,477 @@ function BranchDetailView({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Branch detail — Staff tab                                          */
+/*  Booking config editor (§7)                                         */
 /*                                                                     */
-/*  Staff↔Branch is a single `Staff.branchId` (home branch), so        */
-/*  "assigning" here means moving them from their current branch.      */
+/*  The canonical shape is grouped into three sections — `booking`,    */
+/*  `cancellation`, `confirmation`. PATCH must use the SAME nested     */
+/*  groups (a flat body is rejected by the strict schema, §7.2).       */
+/*  Omitted sections are left untouched server-side, so we only send   */
+/*  the fields the user actually changed.                              */
+/* ------------------------------------------------------------------ */
+
+const REFUND_POLICY_OPTIONS = [
+  { value: 'NO_REFUND',           label: 'No refund' },
+  { value: 'FULL_REFUND',         label: 'Full refund' },
+  { value: 'PERCENTAGE_REFUND',   label: 'Percentage refund' },
+] as const
+
+const CUSTOMER_CANCELLATION_POLICY_OPTIONS = [
+  { value: 'ALWAYS',          label: 'Always' },
+  { value: 'BEFORE_DEADLINE', label: 'Before deadline' },
+  { value: 'NEVER',           label: 'Never' },
+] as const
+
+function BookingConfigEditor({
+  businessId,
+  branchId,
+}: {
+  businessId: string
+  branchId: string
+}) {
+  const toast = useToast()
+  const [config, setConfig] = useState<BookingConfig | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  // Baseline = whatever the server last confirmed. `dirty` compares
+  // against this so the Save button only enables when something changed.
+  const [baseline, setBaseline] = useState<BookingConfig | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    ;(async () => {
+      try {
+        const res = await bookingConfigApi.get(businessId, branchId)
+        if (cancelled) return
+        setConfig(res)
+        setBaseline(res)
+      } catch (err) {
+        if (cancelled) return
+        console.error('[branches] booking config load failed', err)
+        toast.error(extractErrorMessage(err, 'Could not load booking configuration.'))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessId, branchId])
+
+  function patch<K extends keyof BookingConfig>(
+    section: K,
+    field: keyof BookingConfig[K],
+    value: any,
+  ) {
+    setConfig(prev => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        [section]: { ...prev[section], [field]: value },
+      }
+    })
+  }
+
+  const dirty = useMemo(() => {
+    if (!config || !baseline) return false
+    return JSON.stringify(config) !== JSON.stringify(baseline)
+  }, [config, baseline])
+
+  async function save() {
+    if (!config || !baseline) return
+
+    // Build a patch that includes only the fields that actually changed.
+    const patchBody: BookingConfigPatch = {}
+    ;(['booking', 'cancellation', 'confirmation'] as const).forEach(section => {
+      const diff: any = {}
+      const a = config[section] as any
+      const b = baseline[section] as any
+      for (const key of Object.keys(a)) {
+        if (a[key] !== b[key]) diff[key] = a[key]
+      }
+      if (Object.keys(diff).length > 0) patchBody[section] = diff
+    })
+
+    if (Object.keys(patchBody).length === 0) {
+      toast.success('No changes to save.')
+      return
+    }
+
+    setSaving(true)
+    try {
+      const updated = await bookingConfigApi.patch(businessId, branchId, patchBody)
+      setConfig(updated)
+      setBaseline(updated)
+      toast.success('Booking configuration saved')
+    } catch (err) {
+      console.error('[branches] booking config save failed', err)
+      toast.error(extractErrorMessage(err, 'Could not save booking configuration.'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function reset() {
+    if (baseline) setConfig(baseline)
+  }
+
+  if (loading) {
+    return <LoadingState label="Loading booking configuration…" />
+  }
+
+  if (!config) {
+    return (
+      <p className="text-sm text-ink-3 py-10 text-center">
+        Could not load booking configuration.
+      </p>
+    )
+  }
+
+  return (
+    <div className="max-w-2xl flex flex-col gap-4">
+      {/* ───────────── Booking ───────────── */}
+      <Section
+        title="Booking"
+        subtitle="How customers can book and how far ahead."
+      >
+        <Field
+          label="Online booking enabled"
+          description="Allow customers to book themselves through the storefront."
+        >
+          <Toggle
+            checked={config.booking.onlineBookingEnabled}
+            onChange={v => patch('booking', 'onlineBookingEnabled', v)}
+          />
+        </Field>
+
+        <Field
+          label="Walk-in enabled"
+          description="Allow walk-in appointments at the counter."
+        >
+          <Toggle
+            checked={config.booking.walkInEnabled}
+            onChange={v => patch('booking', 'walkInEnabled', v)}
+          />
+        </Field>
+
+        <Field
+          label="Booking approval required"
+          description="New bookings start as PENDING until staff approve them."
+        >
+          <Toggle
+            checked={config.booking.bookingApprovalRequired}
+            onChange={v => patch('booking', 'bookingApprovalRequired', v)}
+          />
+        </Field>
+
+        <Field
+          label="Waitlist enabled"
+          description="Let customers join a waitlist when no slot is available."
+        >
+          <Toggle
+            checked={config.booking.waitlistEnabled}
+            onChange={v => patch('booking', 'waitlistEnabled', v)}
+          />
+        </Field>
+
+        <NumberField
+          label="Minimum advance booking"
+          description="How far ahead a booking must be made."
+          value={config.booking.minimumAdvanceBookingMinutes}
+          suffix="min"
+          min={0}
+          onChange={v => patch('booking', 'minimumAdvanceBookingMinutes', v)}
+        />
+
+        <NumberField
+          label="Maximum advance booking"
+          description="How far into the future customers can book."
+          value={config.booking.maximumAdvanceBookingDays}
+          suffix="days"
+          min={1}
+          onChange={v => patch('booking', 'maximumAdvanceBookingDays', v)}
+        />
+
+        <NumberField
+          label="Booking buffer"
+          description="Padding between appointments on a staff member's calendar."
+          value={config.booking.bookingBufferMinutes}
+          suffix="min"
+          min={0}
+          onChange={v => patch('booking', 'bookingBufferMinutes', v)}
+        />
+      </Section>
+
+      {/* ───────────── Cancellation ───────────── */}
+      <Section
+        title="Cancellation"
+        subtitle="When customers can cancel and what they get back."
+      >
+        <Field
+          label="Customer cancellation enabled"
+          description="Allow customers to cancel their own appointments."
+        >
+          <Toggle
+            checked={config.cancellation.customerCancellationEnabled}
+            onChange={v => patch('cancellation', 'customerCancellationEnabled', v)}
+          />
+        </Field>
+
+        <Field
+          label="Rescheduling enabled"
+          description="Allow customers to move their appointment to a new time."
+        >
+          <Toggle
+            checked={config.cancellation.reschedulingEnabled}
+            onChange={v => patch('cancellation', 'reschedulingEnabled', v)}
+          />
+        </Field>
+
+        <NumberField
+          label="Cancellation window"
+          description="Customers cannot cancel within this many minutes of the appointment."
+          value={config.cancellation.cancellationWindowMinutes}
+          suffix="min"
+          min={0}
+          onChange={v => patch('cancellation', 'cancellationWindowMinutes', v)}
+        />
+
+        <SelectField
+          label="Customer cancellation policy"
+          description="When a customer's cancellation is allowed to trigger a refund."
+          value={config.cancellation.customerCancellationPolicy}
+          options={CUSTOMER_CANCELLATION_POLICY_OPTIONS}
+          onChange={v => patch('cancellation', 'customerCancellationPolicy', v)}
+        />
+
+        <SelectField
+          label="Refund policy"
+          description="How much of the paid amount is refunded on cancellation."
+          value={config.cancellation.refundPolicyType}
+          options={REFUND_POLICY_OPTIONS}
+          onChange={v => patch('cancellation', 'refundPolicyType', v)}
+        />
+
+        {config.cancellation.refundPolicyType === 'PERCENTAGE_REFUND' && (
+          <NumberField
+            label="Refund percentage"
+            description="Percentage of the paid amount that is refunded (0–100)."
+            value={config.cancellation.refundPercentage ?? 0}
+            suffix="%"
+            min={0}
+            max={100}
+            onChange={v => patch('cancellation', 'refundPercentage', v)}
+          />
+        )}
+
+        <NumberField
+          label="Refund deadline"
+          description="Cancellations at least this many hours before start are refundable (per policy)."
+          value={config.cancellation.refundDeadlineHours}
+          suffix="hours"
+          min={0}
+          onChange={v => patch('cancellation', 'refundDeadlineHours', v)}
+        />
+      </Section>
+
+      {/* ───────────── Confirmation ───────────── */}
+      <Section
+        title="Confirmation"
+        subtitle="How and when customers confirm their appointment."
+      >
+        <Field
+          label="Customer confirmation enabled"
+          description="Ask customers to confirm they'll attend."
+        >
+          <Toggle
+            checked={config.confirmation.customerConfirmationEnabled}
+            onChange={v => patch('confirmation', 'customerConfirmationEnabled', v)}
+          />
+        </Field>
+
+        <NumberField
+          label="Confirmation reminder"
+          description="When to send the confirmation reminder before the appointment."
+          value={config.confirmation.confirmationReminderHours}
+          suffix="hours before"
+          min={0}
+          onChange={v => patch('confirmation', 'confirmationReminderHours', v)}
+        />
+
+        <NumberField
+          label="Confirmation deadline"
+          description="How long before the appointment the confirmation must be done."
+          value={config.confirmation.confirmationDeadlineHours}
+          suffix="hours before"
+          min={0}
+          onChange={v => patch('confirmation', 'confirmationDeadlineHours', v)}
+        />
+
+        <NumberField
+          label="Same-day reminder"
+          description="Extra reminder for same-day appointments."
+          value={config.confirmation.sameDayConfirmationReminderHours}
+          suffix="hours before"
+          min={0}
+          onChange={v => patch('confirmation', 'sameDayConfirmationReminderHours', v)}
+        />
+
+        <NumberField
+          label="Pending appointment expiration"
+          description="How long a PENDING booking waits for confirmation before it expires."
+          value={config.confirmation.pendingAppointmentExpirationMinutes}
+          suffix="min"
+          min={0}
+          onChange={v => patch('confirmation', 'pendingAppointmentExpirationMinutes', v)}
+        />
+      </Section>
+
+      <div className="flex items-center gap-3">
+        <Button size="sm" onClick={save} loading={saving} disabled={saving || !dirty}>
+          Save booking settings
+        </Button>
+        {dirty && (
+          <button
+            type="button"
+            onClick={reset}
+            disabled={saving}
+            className="text-xs text-ink-3 hover:text-ink disabled:opacity-50"
+          >
+            Reset changes
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Section({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="bg-surface rounded-2xl border border-line overflow-hidden">
+      <div className="px-5 py-3.5 border-b border-line">
+        <p className="text-sm font-semibold text-ink">{title}</p>
+        {subtitle && <p className="text-xs text-ink-3 mt-0.5">{subtitle}</p>}
+      </div>
+      <div className="divide-y divide-line">{children}</div>
+    </section>
+  )
+}
+
+function Field({
+  label,
+  description,
+  children,
+}: {
+  label: string
+  description?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-5 py-3.5">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-ink">{label}</p>
+        {description && <p className="text-xs text-ink-3 mt-0.5">{description}</p>}
+      </div>
+      <div className="flex-shrink-0">{children}</div>
+    </div>
+  )
+}
+
+function NumberField({
+  label,
+  description,
+  value,
+  onChange,
+  suffix,
+  min,
+  max,
+}: {
+  label: string
+  description?: string
+  value: number
+  onChange: (v: number) => void
+  suffix?: string
+  min?: number
+  max?: number
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-5 py-3.5">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-ink">{label}</p>
+        {description && <p className="text-xs text-ink-3 mt-0.5">{description}</p>}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <input
+          type="number"
+          value={Number.isFinite(value) ? value : 0}
+          min={min}
+          max={max}
+          onChange={e => {
+            const n = parseInt(e.target.value, 10)
+            onChange(Number.isFinite(n) ? n : 0)
+          }}
+          className="
+            h-9 w-24 px-3 text-sm text-right tabular-nums
+            rounded-xl border border-line bg-surface text-ink
+            hover:border-warm focus:outline-none focus:border-ink
+            focus:ring-2 focus:ring-ink-3/20
+          "
+        />
+        {suffix && <span className="text-xs text-ink-3 w-20">{suffix}</span>}
+      </div>
+    </div>
+  )
+}
+
+function SelectField({
+  label,
+  description,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  description?: string
+  value: string
+  options: readonly { value: string; label: string }[]
+  onChange: (v: string) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-5 py-3.5">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-ink">{label}</p>
+        {description && <p className="text-xs text-ink-3 mt-0.5">{description}</p>}
+      </div>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="
+          h-9 px-3 text-sm rounded-xl border border-line bg-surface text-ink
+          hover:border-warm focus:outline-none focus:border-ink
+          focus:ring-2 focus:ring-ink-3/20
+        "
+      >
+        {options.map(o => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Branch detail — Staff tab                                          */
 /* ------------------------------------------------------------------ */
 
 function BranchStaffTab({
@@ -642,7 +1067,6 @@ function BranchStaffTab({
   const [picking, setPicking] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
-  // Staff at other branches are the only candidates for "move here".
   const elsewhere = useMemo(
     () => allStaff.filter(m => m.branchId !== branchId),
     [allStaff, branchId],
@@ -680,7 +1104,6 @@ function BranchStaffTab({
 
   return (
     <div className="max-w-xl flex flex-col gap-3">
-      {/* Assigned list — bordered card with one row per member */}
       <div className="bg-surface rounded-2xl border border-line overflow-hidden">
         {assigned.length === 0 ? (
           <p className="text-sm text-ink-3 py-10 text-center px-5">
@@ -724,7 +1147,6 @@ function BranchStaffTab({
         )}
       </div>
 
-      {/* Add picker — same bordered-card pattern as the hours/overrides editors */}
       {picking ? (
         <div className="bg-surface rounded-2xl border border-line overflow-hidden">
           <div className="px-5 py-3 border-b border-line flex items-center justify-between">
@@ -795,10 +1217,6 @@ function BranchStaffTab({
 
 /* ------------------------------------------------------------------ */
 /*  Branch detail — Services tab                                       */
-/*                                                                     */
-/*  Two independent joins: services↔branch and categories↔branch.      */
-/*  Both use `isActive` on the assignment row. Assign = create /       */
-/*  reactivate; remove = deactivate.                                    */
 /* ------------------------------------------------------------------ */
 
 function BranchServicesTab({
@@ -818,11 +1236,9 @@ function BranchServicesTab({
 }) {
   const toast = useToast()
 
-  // ── Service picker state ────────────────────────────────────────────
   const [pickingService, setPickingService] = useState(false)
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null)
 
-  // ── Category picker state ───────────────────────────────────────────
   const [pickingCategory, setPickingCategory] = useState(false)
   const [busyCategoryId, setBusyCategoryId] = useState<string | null>(null)
 
@@ -835,8 +1251,6 @@ function BranchServicesTab({
     const assignedIds = new Set(assignedCategories.map(c => c.id))
     return allCategories.filter(c => !assignedIds.has(c.id))
   }, [allCategories, assignedCategories])
-
-  /* ---------------- Services ---------------- */
 
   async function assignService(svc: Service) {
     setBusyServiceId(svc.id)
@@ -873,8 +1287,6 @@ function BranchServicesTab({
       setBusyServiceId(null)
     }
   }
-
-  /* ---------------- Categories ---------------- */
 
   async function assignCategory(cat: ServiceCategory) {
     setBusyCategoryId(cat.id)
@@ -914,9 +1326,6 @@ function BranchServicesTab({
 
   return (
     <div className="max-w-xl flex flex-col gap-8">
-      {/* ─────────────────────────────────────────────────────────────
-          Services
-         ───────────────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
           <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
@@ -1032,9 +1441,6 @@ function BranchServicesTab({
         )}
       </section>
 
-      {/* ─────────────────────────────────────────────────────────────
-          Categories
-         ───────────────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
           <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
