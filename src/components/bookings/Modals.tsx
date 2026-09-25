@@ -1,192 +1,675 @@
-import { useState } from 'react'
-import type { Appointment } from '../../types'
-import { Modal, Input, Select, Textarea, Button } from '../ui'
-import { customers, staff, services, branches } from '../../data/mock'
+// src/components/bookings/Modals.tsx
 
-// ─── New Booking ───────────────────────────────────────────────────────────────
+import { useEffect, useMemo, useState } from 'react'
+import type {
+  Appointment,
+  Branch,
+  Customer,
+  Service,
+  Staff,
+  StaffDetail,
+} from '../../types/api'
+import { Modal, Input, Textarea, Button, StyledSelect } from '../ui'
+import { useToast } from '../ui/Toast'
+import { appointmentsApi } from '../../api/appointments.api'
+import { availabilityApi, type AvailabilitySlot } from '../../api/availability.api'
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function customerName(c: Customer): string {
+  return `${c.firstName} ${c.lastName}`.trim()
+}
+
+function primaryPhone(c: Customer): string {
+  const phones = c.phones ?? []
+  return (phones.find(p => p.isPrimary) ?? phones[0])?.phone ?? ''
+}
+
+function staffName(s: Staff): string {
+  return `${s.firstName} ${s.lastName}`.trim()
+}
+
+/** Extract HH:mm from an ISO string without shifting the wall clock. */
+function hhmmFromISO(iso: string): string {
+  // The server returns slot times with the branch's offset already applied,
+  // so we can slice the wall-clock portion safely: "2026-09-24T09:00:00.000+03:00"
+  const m = iso.match(/T(\d{2}:\d{2})/)
+  return m ? m[1] : iso.slice(11, 16)
+}
+
+/**
+ * Combine a YYYY-MM-DD date and an HH:mm time into a full ISO string
+ * in UTC (`...Z`) — the form Zod's `z.string().datetime()` accepts.
+ * Interprets the input as Addis Ababa wall-clock (+03:00).
+ */
+function toBranchISO(date: string, time: string): string {
+  const [y, mo, d] = date.split('-').map(Number)
+  const [h, mi] = time.split(':').map(Number)
+  const utcMillis = Date.UTC(y, mo - 1, d, h - 3, mi, 0, 0)
+  return new Date(utcMillis).toISOString()
+}
+
+/** Today's calendar date (browser-local), as YYYY-MM-DD. */
+function todayLocal(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/** §9.5 — service offered at this branch? */
+function serviceOfferedAt(service: Service, branchId: string): boolean {
+  if (!branchId) return false
+  return (service.branchAssignments ?? []).some(
+    a => a.branchId === branchId && a.isActive,
+  )
+}
+
+/** §12.4 — staff whose home branch matches and who are active. */
+function staffAtBranch(staff: Staff[], branchId: string): Staff[] {
+  if (!branchId) return []
+  return staff.filter(s => s.branchId === branchId && s.status === 'ACTIVE')
+}
+
+/**
+ * §13.3 — staff member actively qualified for this service?
+ * If we don't have the detail row, err on the side of showing them.
+ */
+function staffQualifiedFor(
+  member: Staff,
+  serviceId: string,
+  details: Map<string, StaffDetail>,
+): boolean {
+  const detail = details.get(member.id)
+  if (!detail) return true
+  if (!serviceId) return true
+  return detail.serviceQualifications.some(
+    q => q.serviceId === serviceId && q.isActive,
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  New Booking                                                        */
+/* ------------------------------------------------------------------ */
 
 interface NewBookingModalProps {
   open: boolean
+  businessId: string
+  customers: Customer[]
+  services: Service[]
+  staff: Staff[]
+  staffDetails: Map<string, StaffDetail>
+  branches: Branch[]
   onClose: () => void
-  onAdd: (a: Appointment) => void
+  onCreated: (a: Appointment) => void
 }
 
-export function NewBookingModal({ open, onClose, onAdd }: NewBookingModalProps) {
+export function NewBookingModal({
+  open,
+  businessId,
+  customers,
+  services,
+  staff,
+  staffDetails,
+  branches,
+  onClose,
+  onCreated,
+}: NewBookingModalProps) {
+  const toast = useToast()
+  const [saving, setSaving] = useState(false)
+  const [slots, setSlots] = useState<AvailabilitySlot[]>([])
+  const [slotsLoading, setSlotsLoading] = useState(false)
+
   const [form, setForm] = useState({
-    customerId: 'c1',
-    serviceId:  'sv1',
-    staffId:    's1',
-    branchId:   'b1',
-    date:       new Date().toISOString().split('T')[0],
-    time:       '10:00',
-    paymentStatus: 'unpaid' as Appointment['paymentStatus'],
-    deposit:    '',
-    notes:      '',
+    customerId: '',
+    serviceId: '',
+    staffId: '',           // '' = let server return slots across all eligible staff
+    branchId: '',
+    date: todayLocal(),
+    time: '',              // HH:mm picked from a slot
+    startIso: '',          // full ISO from the picked slot
+    bookingSource: 'STAFF' as 'STAFF' | 'PHONE',
+    deposit: '',
+    notes: '',
   })
 
-  const svc    = services.find(s => s.id === form.serviceId)!
-  const cust   = customers.find(c => c.id === form.customerId)!
-  const member = staff.find(s => s.id === form.staffId)!
-  const branch = branches.find(b => b.id === form.branchId)!
+  // Seed once per open.
+  useEffect(() => {
+    if (!open) return
+    const initialBranchId = staff[0]?.branchId ?? branches[0]?.id ?? ''
+    const initialServices = services.filter(s =>
+      serviceOfferedAt(s, initialBranchId),
+    )
+    const initialServiceId = initialServices[0]?.id ?? ''
 
-  const slots = ['09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','13:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30']
+    setForm({
+      customerId: customers[0]?.id ?? '',
+      serviceId: initialServiceId,
+      staffId: '',
+      branchId: initialBranchId,
+      date: todayLocal(),
+      time: '',
+      startIso: '',
+      bookingSource: 'STAFF',
+      deposit: '',
+      notes: '',
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
-  function handleSubmit() {
-    const appt: Appointment = {
-      id:             `a${Date.now()}`,
-      customerId:     form.customerId,
-      customerName:   cust.name,
-      customerPhone:  cust.phone,
-      serviceId:      form.serviceId,
-      serviceName:    svc.name,
-      staffId:        form.staffId,
-      staffName:      member.name,
-      branchId:       form.branchId,
-      branchName:     branch.name,
-      date:           form.date,
-      startTime:      form.time,
-      duration:       svc.duration,
-      price:          svc.price,
-      deposit:        form.deposit ? Number(form.deposit) : undefined,
-      paymentStatus:  form.paymentStatus,
-      status:         'confirmed',
-      notes:          form.notes || undefined,
+  const servicesForBranch = useMemo(
+    () => services.filter(s => serviceOfferedAt(s, form.branchId)),
+    [services, form.branchId],
+  )
+
+  const staffForBranchAndService = useMemo(() => {
+    const byBranch = staffAtBranch(staff, form.branchId)
+    return byBranch.filter(m =>
+      staffQualifiedFor(m, form.serviceId, staffDetails),
+    )
+  }, [staff, form.branchId, form.serviceId, staffDetails])
+
+  // Reconcile selections when branch or service changes.
+  useEffect(() => {
+    setForm(f => {
+      let next = f
+      if (f.serviceId && !servicesForBranch.some(s => s.id === f.serviceId)) {
+        next = { ...next, serviceId: servicesForBranch[0]?.id ?? '' }
+      }
+      const validStaffIds = new Set(staffForBranchAndService.map(s => s.id))
+      if (f.staffId && !validStaffIds.has(f.staffId)) {
+        next = { ...next, staffId: '' }
+      }
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.branchId, form.serviceId, servicesForBranch, staffForBranchAndService])
+
+  const svc = services.find(s => s.id === form.serviceId) ?? null
+  const durationMinutes = svc?.durationMinutes ?? 0
+
+  // ── Slot fetching ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!open) return
+    if (!form.branchId || !form.serviceId || !form.date) {
+      setSlots([])
+      return
     }
-    onAdd(appt)
-    onClose()
-    setForm(f => ({ ...f, notes: '', deposit: '' }))
+
+    let cancelled = false
+    setSlotsLoading(true)
+
+    ;(async () => {
+      try {
+        const res = await availabilityApi.slots(businessId, {
+          branchId: form.branchId,
+          serviceId: form.serviceId,
+          date: form.date,
+          // Only filter by staff when the user has explicitly chosen one.
+          staffId: form.staffId || undefined,
+          source: 'INTERNAL',   // staff-booking uses INTERNAL (§5.2)
+        })
+        if (cancelled) return
+        const list = Array.isArray(res?.availableSlots) ? res.availableSlots : []
+        setSlots(list)
+
+        // Reset the picked slot if it's no longer available.
+        setForm(f => {
+          if (f.startIso && !list.some(s => s.startTime === f.startIso)) {
+            return { ...f, time: '', startIso: '' }
+          }
+          return f
+        })
+      } catch (err) {
+        if (cancelled) return
+        console.error('[booking] availability failed', err)
+        setSlots([])
+      } finally {
+        if (!cancelled) setSlotsLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, businessId, form.branchId, form.serviceId, form.staffId, form.date])
+
+  const customerOptions = useMemo(
+    () =>
+      customers.map(c => ({
+        value: c.id,
+        label:
+          customerName(c) +
+          (primaryPhone(c) ? ` · ${primaryPhone(c)}` : ''),
+      })),
+    [customers],
+  )
+
+  const serviceOptions = useMemo(
+    () =>
+      servicesForBranch.map(s => ({
+        value: s.id,
+        label: `${s.name} (${s.durationMinutes} min)`,
+      })),
+    [servicesForBranch],
+  )
+
+  const staffOptions = useMemo(
+    () => [
+      { value: '', label: 'Any qualified staff' },
+      ...staffForBranchAndService.map(s => ({
+        value: s.id,
+        label: staffName(s) + (s.title ? ` · ${s.title}` : ''),
+      })),
+    ],
+    [staffForBranchAndService],
+  )
+
+  const branchOptions = useMemo(
+    () => branches.map(b => ({ value: b.id, label: b.name })),
+    [branches],
+  )
+
+  function pickSlot(slot: AvailabilitySlot) {
+    setForm(f => ({
+      ...f,
+      time: hhmmFromISO(slot.startTime),
+      startIso: slot.startTime,
+      // If the user hadn't picked a staff member and the slot narrows it to
+      // one staff, adopt that staff automatically — less friction.
+      staffId: f.staffId || (slot.staff[0]?.id ?? ''),
+    }))
+  }
+
+  async function handleSubmit() {
+    if (!svc) {
+      toast.error('Pick a service.')
+      return
+    }
+    if (!form.startIso) {
+      toast.error('Pick a time slot.')
+      return
+    }
+    if (!form.customerId || !form.serviceId || !form.staffId || !form.branchId) {
+      toast.error('Pick a customer, service, staff, and branch.')
+      return
+    }
+
+    setSaving(true)
+    try {
+      const created = await appointmentsApi.createStaffBooking(businessId, {
+        branchId: form.branchId,
+        customerId: form.customerId,
+        serviceId: form.serviceId,
+        staffId: form.staffId,
+        // The slot's startTime is already a full ISO string from the server.
+        // The schema (per our tests) requires a UTC `Z` form — convert here
+        // without shifting the instant: `new Date(iso).toISOString()`.
+        scheduledStart: new Date(form.startIso).toISOString(),
+        bookingSource: form.bookingSource,
+        notes: form.notes.trim().slice(0, 1000) || undefined,
+      })
+      toast.success('Booking created')
+      onCreated(created)
+      onClose()
+    } catch (err) {
+      console.error('[booking] create failed', err)
+      console.error('[booking] fieldErrors', (err as any)?.fieldErrors)
+      const first = (err as any)?.fieldErrors?.[0]
+      toast.error(
+        first
+          ? `${first.field}: ${first.message}`
+          : extractErrorMessage(err, 'Could not create the booking.'),
+      )
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <Modal open={open} onClose={onClose} title="New Booking" width="max-w-xl">
       <div className="px-6 py-5 flex flex-col gap-5">
-        {/* Customer */}
-        <Select label="Customer" value={form.customerId} onChange={e => setForm(f => ({ ...f, customerId: e.target.value }))}>
-          {customers.map(c => <option key={c.id} value={c.id}>{c.name} · {c.phone}</option>)}
-        </Select>
+        <StyledSelect
+          label="Customer"
+          value={form.customerId}
+          placeholder={
+            customers.length === 0 ? 'No customers yet' : 'Select a customer…'
+          }
+          options={customerOptions}
+          onChange={id => setForm(f => ({ ...f, customerId: id }))}
+        />
 
         <div className="grid grid-cols-2 gap-4">
-          <Select label="Service" value={form.serviceId} onChange={e => setForm(f => ({ ...f, serviceId: e.target.value }))}>
-            {services.map(s => <option key={s.id} value={s.id}>{s.name} ({s.duration} min)</option>)}
-          </Select>
-          <Select label="Staff" value={form.staffId} onChange={e => setForm(f => ({ ...f, staffId: e.target.value }))}>
-            {staff.map(s => <option key={s.id} value={s.id}>{s.name} · {s.role}</option>)}
-          </Select>
+          <StyledSelect
+            label="Branch"
+            value={form.branchId}
+            placeholder="Select a branch…"
+            options={branchOptions}
+            onChange={id =>
+              setForm(f => ({ ...f, branchId: id, time: '', startIso: '' }))
+            }
+          />
+          <Input
+            label="Date"
+            type="date"
+            value={form.date}
+            onChange={e =>
+              setForm(f => ({ ...f, date: e.target.value, time: '', startIso: '' }))
+            }
+          />
         </div>
 
         <div className="grid grid-cols-2 gap-4">
-          <Select label="Branch" value={form.branchId} onChange={e => setForm(f => ({ ...f, branchId: e.target.value }))}>
-            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </Select>
-          <Input label="Date" type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+          <StyledSelect
+            label="Service"
+            value={form.serviceId}
+            placeholder={
+              servicesForBranch.length === 0
+                ? 'No services offered at this branch'
+                : 'Select a service…'
+            }
+            options={serviceOptions}
+            onChange={id =>
+              setForm(f => ({ ...f, serviceId: id, time: '', startIso: '' }))
+            }
+            disabled={servicesForBranch.length === 0}
+          />
+          <StyledSelect
+            label="Staff"
+            value={form.staffId}
+            placeholder="Any qualified staff"
+            options={staffOptions}
+            onChange={id =>
+              setForm(f => ({ ...f, staffId: id, time: '', startIso: '' }))
+            }
+            disabled={staffForBranchAndService.length === 0}
+          />
         </div>
 
-        {/* Time slots */}
+        {/* Slot picker */}
         <div>
-          <label className="text-sm font-medium text-ink-2 block mb-2">Available time</label>
-          <div className="flex flex-wrap gap-2">
-            {slots.map(slot => (
-              <button key={slot} onClick={() => setForm(f => ({ ...f, time: slot }))}
-                className={`px-3 py-1.5 rounded-xl text-sm border transition-all ${
-                  form.time === slot
+          <label className="text-sm font-medium text-ink-2 block mb-2">
+            Available time
+          </label>
+
+          {slotsLoading ? (
+            <p className="text-sm text-ink-3 py-4">Checking availability…</p>
+          ) : slots.length === 0 ? (
+            <div className="bg-surface rounded-xl border border-line px-4 py-4">
+              <p className="text-sm text-ink-3">
+                No slots available for this branch, service, and date.
+                Try another date or adjust the branch/service.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2 max-h-56 overflow-y-auto pr-1">
+              {slots.map(slot => {
+                const label = `${hhmmFromISO(slot.startTime)} – ${hhmmFromISO(slot.serviceEndTime)}`
+                const selected = form.startIso === slot.startTime
+                const staffNames = slot.staff
+                  .map(s => `${s.firstName} ${s.lastName}`)
+                  .join(', ')
+                return (
+                  <button
+                    key={slot.startTime}
+                    type="button"
+                    title={staffNames ? `Staff: ${staffNames}` : undefined}
+                    onClick={() => pickSlot(slot)}
+                    className={`px-3 py-1.5 rounded-xl text-xs border transition-all ${
+                      selected
+                        ? 'border-ink bg-ink text-surface font-medium'
+                        : 'border-line bg-surface text-ink-2 hover:border-warm hover:text-ink'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Source */}
+        <div>
+          <label className="text-sm font-medium text-ink-2 block mb-2">Source</label>
+          <div className="flex gap-2">
+            {(['STAFF', 'PHONE'] as const).map(src => (
+              <button
+                key={src}
+                type="button"
+                onClick={() => setForm(f => ({ ...f, bookingSource: src }))}
+                className={`px-3 py-1.5 rounded-xl text-xs border transition-all ${
+                  form.bookingSource === src
                     ? 'border-ink bg-ink text-surface font-medium'
                     : 'border-line bg-surface text-ink-2 hover:border-warm hover:text-ink'
-                }`}>
-                {slot}
+                }`}
+              >
+                {src === 'STAFF' ? 'Front desk' : 'Phone'}
               </button>
             ))}
           </div>
         </div>
 
+        <Input
+          label="Deposit (ETB, optional)"
+          type="number"
+          placeholder="—"
+          value={form.deposit}
+          onChange={e => setForm(f => ({ ...f, deposit: e.target.value }))}
+        />
+
         {/* Price summary */}
-        <div className="bg-bg rounded-xl px-4 py-3 flex items-center gap-6">
-          <div>
-            <p className="text-xs text-ink-3 mb-0.5">Price</p>
-            <p className="font-semibold text-ink">{svc?.price.toLocaleString()} ETB</p>
+        {svc && form.startIso && (
+          <div className="bg-bg rounded-xl px-4 py-3 flex items-center gap-6">
+            <div>
+              <p className="text-xs text-ink-3 mb-0.5">Price</p>
+              <p className="font-semibold text-ink">
+                {Number(svc.price).toLocaleString()} ETB
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-ink-3 mb-0.5">Duration</p>
+              <p className="font-semibold text-ink">{durationMinutes} min</p>
+            </div>
+            <div>
+              <p className="text-xs text-ink-3 mb-0.5">Time</p>
+              <p className="font-semibold text-ink">
+                {hhmmFromISO(form.startIso)}
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-xs text-ink-3 mb-0.5">Duration</p>
-            <p className="font-semibold text-ink">{svc?.duration} min</p>
-          </div>
-          <div>
-            <p className="text-xs text-ink-3 mb-0.5">End time</p>
-            <p className="font-semibold text-ink">
-              {(() => {
-                const [h, m] = form.time.split(':').map(Number)
-                const total = h * 60 + m + (svc?.duration ?? 0)
-                return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`
-              })()}
-            </p>
-          </div>
-        </div>
+        )}
 
-        <div className="grid grid-cols-2 gap-4">
-          <Input label="Deposit (ETB)" type="number" placeholder="Optional" value={form.deposit} onChange={e => setForm(f => ({ ...f, deposit: e.target.value }))} />
-          <Select label="Payment status" value={form.paymentStatus} onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value as Appointment['paymentStatus'] }))}>
-            <option value="unpaid">Unpaid</option>
-            <option value="deposit-paid">Deposit paid</option>
-            <option value="paid">Paid in full</option>
-          </Select>
-        </div>
-
-        <Textarea label="Notes" placeholder="Any special instructions..." value={form.notes} rows={2} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+        <Textarea
+          label="Notes"
+          placeholder="Any special instructions..."
+          value={form.notes}
+          rows={2}
+          onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+        />
       </div>
 
       <div className="px-6 pb-6 flex gap-3 justify-end border-t border-line pt-4">
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button onClick={handleSubmit}>Create booking</Button>
+        <Button variant="ghost" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button
+          onClick={handleSubmit}
+          loading={saving}
+          disabled={
+            saving ||
+            !svc ||
+            !form.startIso ||
+            servicesForBranch.length === 0 ||
+            staffForBranchAndService.length === 0
+          }
+        >
+          Create booking
+        </Button>
       </div>
     </Modal>
   )
 }
 
-// ─── Walk-in ───────────────────────────────────────────────────────────────────
+/* ------------------------------------------------------------------ */
+/*  Walk-in — unchanged except for the ISO fix on `buildISO`           */
+/* ------------------------------------------------------------------ */
 
 interface WalkInModalProps {
   open: boolean
+  businessId: string
+  customers: Customer[]
+  services: Service[]
+  staff: Staff[]
+  staffDetails: Map<string, StaffDetail>
+  defaultBranchId: string
   onClose: () => void
-  onAdd: (a: Appointment) => void
+  onCreated: (a: Appointment) => void
 }
 
-export function WalkInModal({ open, onClose, onAdd }: WalkInModalProps) {
+export function WalkInModal({
+  open,
+  businessId,
+  customers,
+  services,
+  staff,
+  staffDetails,
+  defaultBranchId,
+  onClose,
+  onCreated,
+}: WalkInModalProps) {
+  const toast = useToast()
+  const [saving, setSaving] = useState(false)
+
   const [form, setForm] = useState({
-    customerId:    'c1',
-    serviceId:     'sv1',
-    staffId:       's1',
-    paymentMethod: 'cash',
-    notes:         '',
+    customerId: '',
+    serviceId: '',
+    staffId: '',
+    branchId: defaultBranchId,
+    notes: '',
   })
 
-  const svc    = services.find(s => s.id === form.serviceId)!
-  const cust   = customers.find(c => c.id === form.customerId)!
-  const member = staff.find(s => s.id === form.staffId)!
+  useEffect(() => {
+    if (!open) return
+    const initialServices = services.filter(s =>
+      serviceOfferedAt(s, defaultBranchId),
+    )
+    const initialServiceId = initialServices[0]?.id ?? ''
+    const initialStaff = staffAtBranch(staff, defaultBranchId).filter(m =>
+      staffQualifiedFor(m, initialServiceId, staffDetails),
+    )
 
-  function handleStart() {
-    const now     = new Date()
-    const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
-    const appt: Appointment = {
-      id:            `walkin-${Date.now()}`,
-      customerId:    form.customerId,
-      customerName:  cust.name,
-      customerPhone: cust.phone,
-      serviceId:     form.serviceId,
-      serviceName:   svc.name,
-      staffId:       form.staffId,
-      staffName:     member.name,
-      branchId:      'b1',
-      branchName:    'Bole',
-      date:          now.toISOString().split('T')[0],
-      startTime:     timeStr,
-      duration:      svc.duration,
-      price:         svc.price,
-      paymentStatus: 'unpaid',
-      status:        'in-progress',
-      notes:         form.notes || undefined,
-      isWalkIn:      true,
+    setForm({
+      customerId: customers[0]?.id ?? '',
+      serviceId: initialServiceId,
+      staffId: initialStaff[0]?.id ?? '',
+      branchId: defaultBranchId,
+      notes: '',
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, defaultBranchId])
+
+  const servicesForBranch = useMemo(
+    () => services.filter(s => serviceOfferedAt(s, form.branchId)),
+    [services, form.branchId],
+  )
+
+  const staffForBranchAndService = useMemo(() => {
+    const byBranch = staffAtBranch(staff, form.branchId)
+    return byBranch.filter(m =>
+      staffQualifiedFor(m, form.serviceId, staffDetails),
+    )
+  }, [staff, form.branchId, form.serviceId, staffDetails])
+
+  useEffect(() => {
+    setForm(f => {
+      let next = f
+      if (f.serviceId && !servicesForBranch.some(s => s.id === f.serviceId)) {
+        next = { ...next, serviceId: servicesForBranch[0]?.id ?? '' }
+      }
+      const validStaffIds = new Set(staffForBranchAndService.map(s => s.id))
+      if (f.staffId && !validStaffIds.has(f.staffId)) {
+        next = { ...next, staffId: staffForBranchAndService[0]?.id ?? '' }
+      }
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.serviceId, servicesForBranch, staffForBranchAndService])
+
+  const svc = services.find(s => s.id === form.serviceId) ?? null
+
+  const customerOptions = useMemo(
+    () => customers.map(c => ({ value: c.id, label: customerName(c) })),
+    [customers],
+  )
+
+  const serviceOptions = useMemo(
+    () =>
+      servicesForBranch.map(s => ({
+        value: s.id,
+        label: `${s.name} – ${Number(s.price).toLocaleString()} ETB (${s.durationMinutes} min)`,
+      })),
+    [servicesForBranch],
+  )
+
+  const staffOptions = useMemo(
+    () =>
+      staffForBranchAndService.map(s => ({
+        value: s.id,
+        label: staffName(s) + (s.title ? ` · ${s.title}` : ''),
+      })),
+    [staffForBranchAndService],
+  )
+
+  async function handleStart() {
+    if (!svc) {
+      toast.error('Pick a service.')
+      return
     }
-    onAdd(appt)
-    onClose()
-    setForm(f => ({ ...f, notes: '' }))
+    if (servicesForBranch.length === 0) {
+      toast.error('No services are offered at this branch.')
+      return
+    }
+    if (staffForBranchAndService.length === 0) {
+      toast.error('No qualified staff for this service at this branch.')
+      return
+    }
+    if (!form.customerId || !form.serviceId || !form.staffId || !form.branchId) {
+      toast.error('Pick a customer, service, staff, and branch.')
+      return
+    }
+
+    setSaving(true)
+    try {
+      // Walk-in has no scheduledStart — the server uses "now" in the branch
+      // timezone (guide §5.1). The walk-in validation runs with source=INTERNAL,
+      // so even outside nominal hours it typically succeeds.
+      const created = await appointmentsApi.createWalkIn(businessId, {
+        branchId: form.branchId,
+        customerId: form.customerId,
+        serviceId: form.serviceId,
+        staffId: form.staffId,
+        notes: form.notes.trim().slice(0, 1000) || undefined,
+      })
+      toast.success('Walk-in started')
+      onCreated(created)
+      onClose()
+    } catch (err) {
+      console.error('[walk-in] create failed', err)
+      console.error('[walk-in] fieldErrors', (err as any)?.fieldErrors)
+      const first = (err as any)?.fieldErrors?.[0]
+      toast.error(
+        first
+          ? `${first.field}: ${first.message}`
+          : extractErrorMessage(err, 'Could not start the walk-in.'),
+      )
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -194,41 +677,124 @@ export function WalkInModal({ open, onClose, onAdd }: WalkInModalProps) {
       <div className="px-6 py-5 flex flex-col gap-5">
         <div className="bg-warm-subtle rounded-xl px-4 py-3">
           <p className="text-sm text-ink-2 leading-relaxed">
-            Walk-in appointments start now and are marked as <span className="font-semibold">In progress</span>.
+            Walk-in appointments start <span className="font-semibold">now</span> and are marked
+            as <span className="font-semibold">Checked in</span> by the server.
           </p>
         </div>
 
-        <Select label="Customer" value={form.customerId} onChange={e => setForm(f => ({ ...f, customerId: e.target.value }))}>
-          {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </Select>
+        <StyledSelect
+          label="Customer"
+          value={form.customerId}
+          placeholder={
+            customers.length === 0 ? 'No customers yet' : 'Select a customer…'
+          }
+          options={customerOptions}
+          onChange={id => setForm(f => ({ ...f, customerId: id }))}
+        />
 
-        <Select label="Service" value={form.serviceId} onChange={e => setForm(f => ({ ...f, serviceId: e.target.value }))}>
-          {services.map(s => <option key={s.id} value={s.id}>{s.name} – {s.price.toLocaleString()} ETB ({s.duration} min)</option>)}
-        </Select>
+        <StyledSelect
+          label="Service"
+          value={form.serviceId}
+          placeholder={
+            servicesForBranch.length === 0
+              ? 'No services offered at this branch'
+              : 'Select a service…'
+          }
+          options={serviceOptions}
+          onChange={id => setForm(f => ({ ...f, serviceId: id }))}
+          disabled={servicesForBranch.length === 0}
+        />
 
-        <Select label="Staff" value={form.staffId} onChange={e => setForm(f => ({ ...f, staffId: e.target.value }))}>
-          {staff.map(s => <option key={s.id} value={s.id}>{s.name} · {s.role}</option>)}
-        </Select>
+        <StyledSelect
+          label="Staff"
+          value={form.staffId}
+          placeholder={
+            staffForBranchAndService.length === 0
+              ? 'No qualified staff at this branch'
+              : 'Select a staff member…'
+          }
+          options={staffOptions}
+          onChange={id => setForm(f => ({ ...f, staffId: id }))}
+          disabled={staffForBranchAndService.length === 0}
+        />
 
-        <Select label="Payment method" value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value }))}>
-          <option value="cash">Cash</option>
-          <option value="card">Card</option>
-          <option value="transfer">Bank transfer</option>
-          <option value="later">Pay later</option>
-        </Select>
+        <Textarea
+          label="Notes"
+          placeholder="Any special requests..."
+          value={form.notes}
+          rows={2}
+          onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+        />
 
-        <Textarea label="Notes" placeholder="Any special requests..." value={form.notes} rows={2} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-
-        <div className="flex items-center justify-between py-3 border-t border-line -mx-0">
+        <div className="flex items-center justify-between py-3 border-t border-line">
           <span className="text-sm text-ink-3">Total</span>
-          <span className="text-xl font-semibold text-ink">{svc?.price.toLocaleString()} ETB</span>
+          <span className="text-xl font-semibold text-ink">
+            {svc ? `${Number(svc.price).toLocaleString()} ETB` : '—'}
+          </span>
         </div>
       </div>
 
       <div className="px-6 pb-6 flex gap-3 justify-end border-t border-line pt-4">
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button onClick={handleStart}>Start appointment</Button>
+        <Button variant="ghost" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button
+          onClick={handleStart}
+          loading={saving}
+          disabled={
+            saving ||
+            !svc ||
+            servicesForBranch.length === 0 ||
+            staffForBranchAndService.length === 0
+          }
+        >
+          Start appointment
+        </Button>
       </div>
     </Modal>
   )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Error helper                                                       */
+/* ------------------------------------------------------------------ */
+
+function extractErrorMessage(err: unknown, fallback = 'Something went wrong.'): string {
+  if (!err) return fallback
+  const anyErr = err as any
+
+  // ApiError.fieldErrors — canonical shape from normalizeError
+  if (Array.isArray(anyErr?.fieldErrors) && anyErr.fieldErrors.length > 0) {
+    const f = anyErr.fieldErrors[0]
+    const prefix = f.field ? `${f.field}: ` : ''
+    return `${prefix}${f.message}`
+  }
+
+  // ApiError.details — non-array object details (rare)
+  if (
+    anyErr?.details &&
+    typeof anyErr.details === 'object' &&
+    !Array.isArray(anyErr.details)
+  ) {
+    const d = anyErr.details as Record<string, unknown>
+    if (typeof d.message === 'string') return d.message
+  }
+
+  // Raw server response (if it ever leaks through)
+  const data = anyErr?.response?.data ?? anyErr?.data ?? anyErr
+  if (Array.isArray(data?.errors) && data.errors.length > 0) {
+    return String(data.errors[0])
+  }
+  if (Array.isArray(data?.details) && data.details.length > 0) {
+    const d = data.details[0]
+    if (typeof d === 'string') return d
+    if (d && typeof d === 'object') {
+      const field = d.field ? `${d.field}: ` : ''
+      return `${field}${d.message ?? JSON.stringify(d)}`
+    }
+  }
+
+  if (typeof data?.message === 'string' && data.message) return data.message
+  if (typeof anyErr?.message === 'string' && anyErr.message) return anyErr.message
+  return fallback
 }

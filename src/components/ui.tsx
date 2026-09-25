@@ -1,5 +1,5 @@
 import { type ReactNode, type InputHTMLAttributes, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react'
-import type { AppointmentStatus } from '../types'
+import type { AppointmentStatus } from '../types/api'
 
 interface ButtonProps {
   children: ReactNode
@@ -107,13 +107,14 @@ export function Textarea({ label, className = '', ...props }: TextareaProps) {
 }
 
 const STATUS_MAP: Record<AppointmentStatus, { label: string; bg: string; text: string; dot: string }> = {
-  'pending':    { label: 'Pending',     bg: '#FBF5EA', text: '#7A5F2C', dot: '#C4A97D' },
-  'confirmed':  { label: 'Confirmed',   bg: '#EAF1F5', text: '#2C5F6A', dot: '#7B9FAB' },
-  'checked-in': { label: 'Checked In',  bg: '#EBF5EE', text: '#2C5F3C', dot: '#8BAB95' },
-  'in-progress':{ label: 'In Progress', bg: '#F0EDF5', text: '#4A3F5F', dot: '#9B8FA8' },
-  'completed':  { label: 'Completed',   bg: '#EAF5EC', text: '#2A5F30', dot: '#7FAB85' },
-  'cancelled':  { label: 'Cancelled',   bg: '#F5F4F2', text: '#6B6560', dot: '#A8A4A0' },
-  'no-show':    { label: 'No-show',     bg: '#F5EAEA', text: '#6A2C2C', dot: '#C47B7B' },
+  PENDING:     { label: 'Pending',     bg: '#FBF5EA', text: '#7A5F2C', dot: '#C4A97D' },
+  CONFIRMED:   { label: 'Confirmed',   bg: '#EAF1F5', text: '#2C5F6A', dot: '#7B9FAB' },
+  CHECKED_IN:  { label: 'Checked In',  bg: '#EBF5EE', text: '#2C5F3C', dot: '#8BAB95' },
+  IN_PROGRESS: { label: 'In Progress', bg: '#F0EDF5', text: '#4A3F5F', dot: '#9B8FA8' },
+  COMPLETED:   { label: 'Completed',   bg: '#EAF5EC', text: '#2A5F30', dot: '#7FAB85' },
+  CANCELLED:   { label: 'Cancelled',   bg: '#F5F4F2', text: '#6B6560', dot: '#A8A4A0' },
+  NO_SHOW:     { label: 'No-show',     bg: '#F5EAEA', text: '#6A2C2C', dot: '#C47B7B' },
+  EXPIRED:     { label: 'Expired',     bg: '#F5F4F2', text: '#6B6560', dot: '#A8A4A0' },
 }
 
 export function getStatusConfig(status: AppointmentStatus) {
@@ -181,6 +182,145 @@ export function Modal({ open, onClose, title, children, width = 'max-w-lg' }: {
         )}
         {children}
       </div>
+    </div>
+  )
+}
+
+// append to src/components/ui.tsx
+
+import { useEffect, useRef, useState } from 'react'
+
+export interface StyledSelectOption {
+  value: string
+  label: string
+}
+
+interface StyledSelectProps {
+  label?: string
+  value: string
+  options: StyledSelectOption[]
+  placeholder?: string
+  onChange: (value: string) => void
+  disabled?: boolean
+  error?: string
+  className?: string
+}
+
+export function StyledSelect({
+  label,
+  value,
+  options,
+  placeholder = 'Select…',
+  onChange,
+  disabled,
+  error,
+  className = '',
+}: StyledSelectProps) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  const selected = options.find(o => o.value === value)
+
+  return (
+    <div className={`flex flex-col gap-1.5 ${className}`} ref={ref}>
+      {label && <label className="text-sm font-medium text-ink-2">{label}</label>}
+      <div className="relative">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => setOpen(o => !o)}
+          className={`
+            w-full h-10 px-3 rounded-[10px]
+            border bg-surface text-ink text-sm
+            flex items-center justify-between gap-2 text-left
+            focus:outline-none focus:border-ink-3 focus:ring-2 focus:ring-ink-3/10
+            transition-colors cursor-pointer
+            disabled:opacity-50 disabled:cursor-not-allowed
+            ${error ? 'border-[#C47B7B]' : 'border-line'}
+          `}
+        >
+          <span className={`truncate ${selected ? '' : 'text-ink-3'}`}>
+            {selected?.label ?? placeholder}
+          </span>
+          <svg
+            className={`flex-shrink-0 text-ink-3 transition-transform ${open ? 'rotate-180' : ''}`}
+            width="14" height="14" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" strokeLinejoin="round"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+
+        {open && (
+          <div
+            className="
+              absolute z-30 mt-1.5 w-full
+              rounded-[10px] border border-line bg-surface
+              shadow-lg shadow-black/5
+              overflow-hidden
+            "
+          >
+            <div className="max-h-56 overflow-y-auto py-1">
+              {options.length === 0 ? (
+                <p className="px-3 py-2 text-sm text-ink-3">No options</p>
+              ) : (
+                options.map(o => {
+                  const isSelected = o.value === value
+                  return (
+                    <button
+                      key={o.value}
+                      type="button"
+                      onClick={() => {
+                        onChange(o.value)
+                        setOpen(false)
+                      }}
+                      className={`
+                        w-full px-3 py-2 text-left text-sm
+                        flex items-center justify-between gap-2 transition-colors
+                        ${isSelected
+                          ? 'bg-warm-subtle text-ink font-medium'
+                          : 'text-ink-2 hover:bg-warm-subtle hover:text-ink'}
+                      `}
+                    >
+                      <span className="truncate">{o.label}</span>
+                      {isSelected && (
+                        <svg
+                          width="14" height="14" viewBox="0 0 24 24" fill="none"
+                          stroke="currentColor" strokeWidth="2.2"
+                          strokeLinecap="round" strokeLinejoin="round"
+                          className="text-ink flex-shrink-0"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+      {error && <p className="text-xs text-[#B06A6A]">{error}</p>}
     </div>
   )
 }
