@@ -379,12 +379,6 @@ export interface UpdateServiceCategoryInput {
   status?: ServiceStatus;
 }
 
-export interface SampleWorkInput {
-  name: string;
-  url: string;
-  description?: string;
-}
-
 // ============================================================
 // §9 Services
 // ============================================================
@@ -578,47 +572,64 @@ export interface StaffTimeOffUpdateInput {
   reason?: string | null;
 }
 
-export type CustomerStatus = 'ACTIVE' | 'ARCHIVED'
+// ============================================================
+// §3 Customers
+// ============================================================
+
+export type CustomerStatus = 'ACTIVE' | 'ARCHIVED';
 
 export interface CustomerPhone {
-  id: string
-  phone: string
-  isPrimary: boolean
-  // per §3.4 responses; may not be present on the create response
-  label?: string | null
-  isActive?: boolean
+  id: string;
+  phone: string;
+  isPrimary: boolean;
+  /** Per §3.4 responses; may not be present on the create response. */
+  label?: string | null;
+  isActive?: boolean;
 }
 
 export interface Customer {
-  id: string
-  businessId: string
-  firstName: string
-  lastName: string
-  status: CustomerStatus
-  phones: CustomerPhone[]
-  createdAt: string
-  updatedAt?: string
+  id: string;
+  businessId: string;
+  firstName: string;
+  lastName: string;
+  status: CustomerStatus;
+  phones: CustomerPhone[];
+  createdAt: string;
+  updatedAt?: string;
 }
 
-// §12 enum reference — small unions worth having
+// ============================================================
+// Enum reference (§12)
+// ============================================================
+
 export type RefundRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 export type PaymentStatus = 'PAID' | 'VOIDED';
 export type ReceiptStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
-export type CustomerConfirmationStatus = 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'EXPIRED';
+export type CustomerConfirmationStatus =
+  | 'PENDING'
+  | 'CONFIRMED'
+  | 'DECLINED'
+  | 'EXPIRED';
 export type ActorType = 'USER' | 'SYSTEM';
 
-// §7.2 — tighten if the server enumerates
+/** §7.2 — tighten if the server enumerates */
 export type CustomerCancellationPolicy = 'ALWAYS' | 'BEFORE_DEADLINE' | 'NEVER';
 
-// §8.6 — publicId is required by the create schema
+// ============================================================
+// §8.6 Sample works
+// ============================================================
+
+/** §8.6 — `publicId` is required by the create schema. */
 export interface SampleWorkInput {
-  name: string
-  url: string
-  publicId: string
-  description?: string
+  name: string;
+  url: string;
+  publicId: string;
+  description?: string;
 }
 
-// types/api.ts (append)
+// ============================================================
+// §5 / §9 Appointments
+// ============================================================
 
 export type AppointmentStatus =
   | 'PENDING'
@@ -628,82 +639,123 @@ export type AppointmentStatus =
   | 'COMPLETED'
   | 'CANCELLED'
   | 'NO_SHOW'
-  | 'EXPIRED'
+  | 'EXPIRED';
 
-export type BookingSource = 'ONLINE' | 'STAFF' | 'PHONE' | 'WALK_IN'
+export type BookingSource = 'ONLINE' | 'STAFF' | 'PHONE' | 'WALK_IN';
 
+/**
+ * The staff reference embedded in an appointment payload (§5.1 / §5.3
+ * list responses).
+ *
+ * NOTE: the server returns a **single object** (not an array), keyed by
+ * `id` — not `staffId`. `staffId` is retained as an optional alias so
+ * code mid-migration still type-checks; remove it once all call sites
+ * use `id`.
+ */
 export interface AppointmentStaffRef {
-  staffId: string
-  firstName: string
-  lastName: string
+  id: string;
+  firstName: string;
+  lastName: string;
+  /** @deprecated — use `id`. Kept for transitional compatibility. */
+  staffId?: string;
+}
+
+export interface AppointmentCustomerSummary {
+  id: string;
+  firstName: string;
+  lastName: string;
+  phones: Array<{ id: string; phone: string; isPrimary: boolean }>;
 }
 
 export interface Appointment {
-  id: string
-  businessId: string
-  branchId: string
-  customerId: string
+  id: string;
+  businessId: string;
+  branchId: string;
+  customerId: string;
   service: {
-    id: string
-    name: string
-    durationMinutes: number
-    price: string
-  }
-  staff: AppointmentStaffRef[]
-  scheduledStart: string  // ISO UTC
-  scheduledEnd: string    // ISO UTC
-  status: AppointmentStatus
-  bookingSource: BookingSource
-  totalAmount: string     // Decimal → string
-  depositAmount: string | null
-  notes: string | null
-  internalNotes: string | null
-  checkedInAt?: string | null
-  confirmedAt?: string | null
-  inProgressAt?: string | null
-  completedAt?: string | null
-  cancelledAt?: string | null
-  noShowAt?: string | null
+    id: string;
+    name: string;
+    durationMinutes: number;
+    price: string;
+  };
+  /**
+   * The staff member assigned to this appointment. Single object, not
+   * an array. `null` if unassigned.
+   */
+  staff: AppointmentStaffRef | null;
+  scheduledStart: string; // ISO UTC
+  scheduledEnd: string;   // ISO UTC
+  status: AppointmentStatus;
+  bookingSource: BookingSource;
+  totalAmount: string;    // Decimal → string
+  depositAmount: string | null;
+  notes: string | null;
+  internalNotes: string | null;
+
+  /**
+   * Joined customer summary. Present on list responses (§5.3); may be
+   * absent on single-get responses in some serializer configurations.
+   */
+  customer?: AppointmentCustomerSummary;
+
+  // Optional operational timestamps
+  checkedInAt?: string | null;
+  confirmedAt?: string | null;
+  inProgressAt?: string | null;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
+  noShowAt?: string | null;
 }
 
+// ============================================================
+// §5.11 Status history
+// ============================================================
 
 export interface AppointmentStatusHistoryEntry {
-  id: string
-  appointmentId: string
-  statusFrom: AppointmentStatus | null
-  statusTo: AppointmentStatus
-  actorId: string | null
-  actorType: 'USER' | 'SYSTEM'
-  reason: string | null
-  transitionTimestamp: string
-  actor?: { id: string; phone: string } | null
+  id: string;
+  appointmentId: string;
+  statusFrom: AppointmentStatus | null;
+  statusTo: AppointmentStatus;
+  actorId: string | null;
+  actorType: ActorType;
+  reason: string | null;
+  transitionTimestamp: string;
+  actor?: { id: string; phone: string } | null;
 }
+
+// ============================================================
+// §6 Service usage
+// ============================================================
 
 export interface ServiceUsage {
-  id: string
-  appointmentId: string
-  businessId: string
-  branchId: string
-  serviceId: string | null
-  serviceName: string
-  serviceDetails: string | null
-  productsUsed: Array<{ name: string; quantity: number; unit: string }> | null
-  notes: string | null
-  recordedById: string
-  recordedAt: string
+  id: string;
+  appointmentId: string;
+  businessId: string;
+  branchId: string;
+  serviceId: string | null;
+  serviceName: string;
+  serviceDetails: string | null;
+  productsUsed: Array<{ name: string; quantity: number; unit: string }> | null;
+  notes: string | null;
+  recordedById: string;
+  recordedAt: string;
 }
 
+// ============================================================
+// §7 Appointment payments
+// ============================================================
+
 export interface AppointmentPayment {
-  id: string
-  appointmentId: string
-  businessId: string
-  branchId: string
-  paymentMethodId: string
-  paymentMethod?: { name: string; type: string } | null
-  amount: string
-  status: 'PAID' | 'VOIDED'
-  reference: string | null
-  notes: string | null
-  recordedById: string
-  paidAt: string
+  id: string;
+  appointmentId: string;
+  businessId: string;
+  branchId: string;
+  paymentMethodId: string;
+  paymentMethod?: { name: string; type: string } | null;
+  amount: string;
+  status: PaymentStatus;
+  reference: string | null;
+  notes: string | null;
+  recordedById: string;
+  paidAt: string;
 }

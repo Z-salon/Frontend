@@ -1,11 +1,12 @@
 // src/components/bookings/Modals.tsx
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Appointment,
   Branch,
   Customer,
   Service,
+  ServiceCategory,
   Staff,
   StaffDetail,
 } from '../../types/api'
@@ -13,6 +14,7 @@ import { Modal, Input, Textarea, Button, StyledSelect } from '../ui'
 import { useToast } from '../ui/Toast'
 import { appointmentsApi } from '../../api/appointments.api'
 import { availabilityApi, type AvailabilitySlot } from '../../api/availability.api'
+import { branchesApi } from '../../api/branches.api'
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -31,27 +33,28 @@ function staffName(s: Staff): string {
   return `${s.firstName} ${s.lastName}`.trim()
 }
 
-/** Extract HH:mm from an ISO string without shifting the wall clock. */
+/** Parse HH:mm from an ISO string, no timezone shifting. */
 function hhmmFromISO(iso: string): string {
-  // The server returns slot times with the branch's offset already applied,
-  // so we can slice the wall-clock portion safely: "2026-09-24T09:00:00.000+03:00"
   const m = iso.match(/T(\d{2}:\d{2})/)
   return m ? m[1] : iso.slice(11, 16)
 }
 
-/**
- * Combine a YYYY-MM-DD date and an HH:mm time into a full ISO string
- * in UTC (`...Z`) — the form Zod's `z.string().datetime()` accepts.
- * Interprets the input as Addis Ababa wall-clock (+03:00).
- */
-function toBranchISO(date: string, time: string): string {
-  const [y, mo, d] = date.split('-').map(Number)
-  const [h, mi] = time.split(':').map(Number)
-  const utcMillis = Date.UTC(y, mo - 1, d, h - 3, mi, 0, 0)
-  return new Date(utcMillis).toISOString()
+/** "09:00" → "9:00 AM". "00:00" → "12:00 AM". "13:05" → "1:05 PM". */
+function formatClock(hhmm: string): string {
+  const [hStr, mStr] = hhmm.split(':')
+  const h = Number(hStr)
+  const m = Number(mStr)
+  const suffix = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12}:${String(m).padStart(2, '0')} ${suffix}`
 }
 
-/** Today's calendar date (browser-local), as YYYY-MM-DD. */
+/** "09:00" and "10:00" → "9:00 AM – 10:00 AM". */
+function formatRange(startHHmm: string, endHHmm: string): string {
+  return `${formatClock(startHHmm)} – ${formatClock(endHHmm)}`
+}
+
+/** Today's calendar date (browser-local) as YYYY-MM-DD. */
 function todayLocal(): string {
   const d = new Date()
   const y = d.getFullYear()
@@ -60,10 +63,18 @@ function todayLocal(): string {
   return `${y}-${m}-${day}`
 }
 
-/** §9.5 — service offered at this branch? */
+/** §9.5 — service actively offered at this branch? */
 function serviceOfferedAt(service: Service, branchId: string): boolean {
   if (!branchId) return false
   return (service.branchAssignments ?? []).some(
+    a => a.branchId === branchId && a.isActive,
+  )
+}
+
+/** §8.5 — category actively assigned to this branch? */
+function categoryOfferedAt(category: ServiceCategory, branchId: string): boolean {
+  if (!branchId) return false
+  return (category.branchAssignments ?? []).some(
     a => a.branchId === branchId && a.isActive,
   )
 }
@@ -74,10 +85,7 @@ function staffAtBranch(staff: Staff[], branchId: string): Staff[] {
   return staff.filter(s => s.branchId === branchId && s.status === 'ACTIVE')
 }
 
-/**
- * §13.3 — staff member actively qualified for this service?
- * If we don't have the detail row, err on the side of showing them.
- */
+/** §13.3 — staff actively qualified for the service (unknown = show). */
 function staffQualifiedFor(
   member: Staff,
   serviceId: string,
@@ -92,61 +100,306 @@ function staffQualifiedFor(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Empty-state reasoning                                              */
+/* ------------------------------------------------------------------ */
+
+type EmptyReason =
+  | { kind: 'no-branch' }
+  | { kind: 'no-services' }
+  | { kind: 'no-service-selected' }
+  | { kind: 'no-qualified-staff' }
+  | { kind: 'branch-closed'; branchName: string; date: string }
+  | { kind: 'no-slots'; branchName: string; date: string }
+  | { kind: 'loading' }
+
+function describeEmpty(args: {
+  branchId: string
+  branchName: string
+  serviceId: string
+  date: string
+  servicesForBranch: Service[]
+  staffForBranchAndService: Staff[]
+  branchIntervals: number
+}): EmptyReason {
+  if (!args.branchId) return { kind: 'no-branch' }
+  if (args.servicesForBranch.length === 0) return { kind: 'no-services' }
+  if (!args.serviceId) return { kind: 'no-service-selected' }
+  if (args.staffForBranchAndService.length === 0) return { kind: 'no-qualified-staff' }
+  if (args.branchIntervals === 0) {
+    return {
+      kind: 'branch-closed',
+      branchName: args.branchName,
+      date: args.date,
+    }
+  }
+  return {
+    kind: 'no-slots',
+    branchName: args.branchName,
+    date: args.date,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Empty-state renderer                                               */
+/* ------------------------------------------------------------------ */
+
+function EmptyState({
+  reason,
+  onOpenBranches,
+  onRetry,
+}: {
+  reason: EmptyReason
+  onOpenBranches?: () => void
+  onRetry: () => void
+}) {
+  const base = 'bg-surface rounded-xl border border-line px-4 py-4 flex flex-col gap-2'
+  const Title = ({ children }: { children: React.ReactNode }) => (
+    <p className="text-sm font-medium text-ink">{children}</p>
+  )
+  const Body = ({ children }: { children: React.ReactNode }) => (
+    <p className="text-xs text-ink-3">{children}</p>
+  )
+
+  const Actions = () => (
+    <div className="flex gap-3 mt-1">
+      {onOpenBranches && (
+        <button
+          type="button"
+          onClick={onOpenBranches}
+          className="text-xs text-ink underline hover:no-underline"
+        >
+          Open Branches
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onRetry}
+        className="text-xs text-ink-3 hover:text-ink"
+      >
+        Retry
+      </button>
+    </div>
+  )
+
+  switch (reason.kind) {
+    case 'no-branch':
+      return (
+        <div className={base}>
+          <Title>Pick a branch</Title>
+          <Body>Select a branch to see available times.</Body>
+        </div>
+      )
+    case 'no-services':
+      return (
+        <div className={base}>
+          <Title>No services offered here</Title>
+          <Body>
+            This branch has no services assigned. Assign services in the Branches
+            page, then come back.
+          </Body>
+          <Actions />
+        </div>
+      )
+    case 'no-service-selected':
+      return (
+        <div className={base}>
+          <Title>Pick a service</Title>
+          <Body>Select a service to see available times.</Body>
+        </div>
+      )
+    case 'no-qualified-staff':
+      return (
+        <div className={base}>
+          <Title>No qualified staff</Title>
+          <Body>
+            None of this branch's staff are qualified for the selected service.
+            Add a qualification in the Staff page, or pick a different service.
+          </Body>
+        </div>
+      )
+    case 'branch-closed':
+      return (
+        <div className={base}>
+          <Title>{reason.branchName} is closed on {reason.date}</Title>
+          <Body>
+            Set the branch's weekly hours or overrides in the Branches page, or
+            try a different date.
+          </Body>
+          <Actions />
+        </div>
+      )
+    case 'no-slots':
+      return (
+        <div className={base}>
+          <Title>Fully booked</Title>
+          <Body>
+            {reason.branchName} is open on {reason.date}, but no slot fits. All
+            qualified staff are either booked, on break, or off that day. Try a
+            different date or staff member.
+          </Body>
+          <Actions />
+        </div>
+      )
+    case 'loading':
+      return (
+        <div className={base}>
+          <Body>Checking availability…</Body>
+        </div>
+      )
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  LockedField                                                        */
+/*                                                                     */
+/*  A read-only field that visually matches a StyledSelect trigger     */
+/*  but is not interactive. Used when a value is pinned by the         */
+/*  app-level context (e.g. the branch filter) so the field reads as   */
+/*  "locked" rather than "broken".                                     */
+/* ------------------------------------------------------------------ */
+
+function LockedField({
+  label,
+  value,
+}: {
+  label: string
+  value: string
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-medium text-ink-2">{label}</label>
+      <div
+        className="
+          h-10 px-3 rounded-[10px]
+          border border-line bg-bg
+          text-sm text-ink
+          flex items-center
+          cursor-default select-none
+        "
+        aria-disabled="true"
+      >
+        <span className="truncate">{value}</span>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  New Booking                                                        */
 /* ------------------------------------------------------------------ */
 
 interface NewBookingModalProps {
   open: boolean
   businessId: string
+  /** Set when the app-level branch filter is active; hides the branch select. */
+  lockedBranchId?: string
   customers: Customer[]
   services: Service[]
+  categories: ServiceCategory[]
   staff: Staff[]
   staffDetails: Map<string, StaffDetail>
   branches: Branch[]
   onClose: () => void
   onCreated: (a: Appointment) => void
+  onOpenBranches?: () => void
 }
 
 export function NewBookingModal({
   open,
   businessId,
+  lockedBranchId,
   customers,
   services,
+  categories,
   staff,
   staffDetails,
   branches,
   onClose,
   onCreated,
+  onOpenBranches,
 }: NewBookingModalProps) {
   const toast = useToast()
   const [saving, setSaving] = useState(false)
   const [slots, setSlots] = useState<AvailabilitySlot[]>([])
   const [slotsLoading, setSlotsLoading] = useState(false)
+  const [branchIntervals, setBranchIntervals] = useState<number | null>(null)
+
+  const fetchIdRef = useRef(0)
 
   const [form, setForm] = useState({
     customerId: '',
+    categoryId: '',
     serviceId: '',
-    staffId: '',           // '' = let server return slots across all eligible staff
-    branchId: '',
+    staffId: '',
+    branchId: lockedBranchId ?? '',
     date: todayLocal(),
-    time: '',              // HH:mm picked from a slot
-    startIso: '',          // full ISO from the picked slot
+    time: '',
+    startIso: '',
     bookingSource: 'STAFF' as 'STAFF' | 'PHONE',
     deposit: '',
     notes: '',
   })
 
-  // Seed once per open.
+  // ── Categories & services scoped to the branch ────────────────────
+  const servicesForBranch = useMemo(
+    () => services.filter(s => serviceOfferedAt(s, form.branchId)),
+    [services, form.branchId],
+  )
+
+  const categoriesForBranch = useMemo(() => {
+    const serviceCategoryIds = new Set(servicesForBranch.map(s => s.categoryId))
+    return categories.filter(
+      c => categoryOfferedAt(c, form.branchId) && serviceCategoryIds.has(c.id),
+    )
+  }, [categories, servicesForBranch, form.branchId])
+
+  const servicesInCategory = useMemo(
+    () =>
+      form.categoryId
+        ? servicesForBranch.filter(s => s.categoryId === form.categoryId)
+        : servicesForBranch,
+    [servicesForBranch, form.categoryId],
+  )
+
+  const staffForBranchAndService = useMemo(() => {
+    const byBranch = staffAtBranch(staff, form.branchId)
+    return byBranch.filter(m =>
+      staffQualifiedFor(m, form.serviceId, staffDetails),
+    )
+  }, [staff, form.branchId, form.serviceId, staffDetails])
+
+  // ── Seed on open ──────────────────────────────────────────────────
   useEffect(() => {
     if (!open) return
-    const initialBranchId = staff[0]?.branchId ?? branches[0]?.id ?? ''
+    const validBranchIds = new Set(branches.map(b => b.id))
+
+    const initialBranchId =
+      lockedBranchId && validBranchIds.has(lockedBranchId)
+        ? lockedBranchId
+        : (staff[0]?.branchId && validBranchIds.has(staff[0].branchId)
+            ? staff[0].branchId
+            : undefined) ??
+          branches[0]?.id ??
+          ''
+
     const initialServices = services.filter(s =>
       serviceOfferedAt(s, initialBranchId),
     )
-    const initialServiceId = initialServices[0]?.id ?? ''
+    const initialCategories = new Set(initialServices.map(s => s.categoryId))
+    const initialCategoryId =
+      categories.find(c => initialCategories.has(c.id))?.id ?? ''
+    const initialServicesInCategory = initialCategoryId
+      ? initialServices.filter(s => s.categoryId === initialCategoryId)
+      : initialServices
+    const initialServiceId = initialServicesInCategory[0]?.id ?? ''
+    const initialStaff = staffAtBranch(staff, initialBranchId).filter(m =>
+      staffQualifiedFor(m, initialServiceId, staffDetails),
+    )
+    void initialStaff
 
     setForm({
       customerId: customers[0]?.id ?? '',
+      categoryId: initialCategoryId,
       serviceId: initialServiceId,
       staffId: '',
       branchId: initialBranchId,
@@ -160,63 +413,85 @@ export function NewBookingModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const servicesForBranch = useMemo(
-    () => services.filter(s => serviceOfferedAt(s, form.branchId)),
-    [services, form.branchId],
-  )
-
-  const staffForBranchAndService = useMemo(() => {
-    const byBranch = staffAtBranch(staff, form.branchId)
-    return byBranch.filter(m =>
-      staffQualifiedFor(m, form.serviceId, staffDetails),
-    )
-  }, [staff, form.branchId, form.serviceId, staffDetails])
-
-  // Reconcile selections when branch or service changes.
+  // ── Reconcile dependent selects when branch/category/service changes ─
   useEffect(() => {
     setForm(f => {
       let next = f
-      if (f.serviceId && !servicesForBranch.some(s => s.id === f.serviceId)) {
-        next = { ...next, serviceId: servicesForBranch[0]?.id ?? '' }
+
+      if (f.branchId && !branches.some(b => b.id === f.branchId)) {
+        next = { ...next, branchId: branches[0]?.id ?? '' }
       }
+
+      if (f.categoryId && !categoriesForBranch.some(c => c.id === f.categoryId)) {
+        next = {
+          ...next,
+          categoryId: categoriesForBranch[0]?.id ?? '',
+          serviceId: '',
+          staffId: '',
+          time: '',
+          startIso: '',
+        }
+      }
+
+      if (f.serviceId && !servicesInCategory.some(s => s.id === f.serviceId)) {
+        next = {
+          ...next,
+          serviceId: servicesInCategory[0]?.id ?? '',
+          staffId: '',
+          time: '',
+          startIso: '',
+        }
+      }
+
       const validStaffIds = new Set(staffForBranchAndService.map(s => s.id))
       if (f.staffId && !validStaffIds.has(f.staffId)) {
-        next = { ...next, staffId: '' }
+        next = { ...next, staffId: '', time: '', startIso: '' }
       }
+
       return next
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.branchId, form.serviceId, servicesForBranch, staffForBranchAndService])
+  }, [branches, form.branchId, form.categoryId, form.serviceId,
+      categoriesForBranch, servicesInCategory, staffForBranchAndService])
 
   const svc = services.find(s => s.id === form.serviceId) ?? null
   const durationMinutes = svc?.durationMinutes ?? 0
 
-  // ── Slot fetching ────────────────────────────────────────────────
+  // ── Slot fetching ─────────────────────────────────────────────────
   useEffect(() => {
     if (!open) return
+
     if (!form.branchId || !form.serviceId || !form.date) {
       setSlots([])
+      setBranchIntervals(null)
       return
     }
 
-    let cancelled = false
+    const myFetch = ++fetchIdRef.current
     setSlotsLoading(true)
 
     ;(async () => {
       try {
-        const res = await availabilityApi.slots(businessId, {
-          branchId: form.branchId,
-          serviceId: form.serviceId,
-          date: form.date,
-          // Only filter by staff when the user has explicitly chosen one.
-          staffId: form.staffId || undefined,
-          source: 'INTERNAL',   // staff-booking uses INTERNAL (§5.2)
-        })
-        if (cancelled) return
-        const list = Array.isArray(res?.availableSlots) ? res.availableSlots : []
-        setSlots(list)
+        const [availRes, intervalsRes] = await Promise.all([
+          availabilityApi.slots(businessId, {
+            branchId: form.branchId,
+            serviceId: form.serviceId,
+            date: form.date,
+            staffId: form.staffId || undefined,
+            source: 'INTERNAL',
+          }),
+          branchesApi
+            .operatingIntervals(businessId, form.branchId, form.date)
+            .catch(() => null),
+        ])
+        if (myFetch !== fetchIdRef.current) return
 
-        // Reset the picked slot if it's no longer available.
+        const list = Array.isArray(availRes?.availableSlots)
+          ? availRes.availableSlots
+          : []
+        setSlots(list)
+        setBranchIntervals(intervalsRes?.intervals?.length ?? 0)
+
         setForm(f => {
           if (f.startIso && !list.some(s => s.startTime === f.startIso)) {
             return { ...f, time: '', startIso: '' }
@@ -224,20 +499,18 @@ export function NewBookingModal({
           return f
         })
       } catch (err) {
-        if (cancelled) return
+        if (myFetch !== fetchIdRef.current) return
         console.error('[booking] availability failed', err)
         setSlots([])
+        setBranchIntervals(null)
       } finally {
-        if (!cancelled) setSlotsLoading(false)
+        if (myFetch === fetchIdRef.current) setSlotsLoading(false)
       }
     })()
-
-    return () => {
-      cancelled = true
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, businessId, form.branchId, form.serviceId, form.staffId, form.date])
 
+  // ── Option lists ──────────────────────────────────────────────────
   const customerOptions = useMemo(
     () =>
       customers.map(c => ({
@@ -249,13 +522,18 @@ export function NewBookingModal({
     [customers],
   )
 
+  const categoryOptions = useMemo(
+    () => categoriesForBranch.map(c => ({ value: c.id, label: c.name })),
+    [categoriesForBranch],
+  )
+
   const serviceOptions = useMemo(
     () =>
-      servicesForBranch.map(s => ({
+      servicesInCategory.map(s => ({
         value: s.id,
         label: `${s.name} (${s.durationMinutes} min)`,
       })),
-    [servicesForBranch],
+    [servicesInCategory],
   )
 
   const staffOptions = useMemo(
@@ -279,24 +557,15 @@ export function NewBookingModal({
       ...f,
       time: hhmmFromISO(slot.startTime),
       startIso: slot.startTime,
-      // If the user hadn't picked a staff member and the slot narrows it to
-      // one staff, adopt that staff automatically — less friction.
       staffId: f.staffId || (slot.staff[0]?.id ?? ''),
     }))
   }
 
   async function handleSubmit() {
-    if (!svc) {
-      toast.error('Pick a service.')
-      return
-    }
-    if (!form.startIso) {
-      toast.error('Pick a time slot.')
-      return
-    }
+    if (!svc) { toast.error('Pick a service.'); return }
+    if (!form.startIso) { toast.error('Pick a time slot.'); return }
     if (!form.customerId || !form.serviceId || !form.staffId || !form.branchId) {
-      toast.error('Pick a customer, service, staff, and branch.')
-      return
+      toast.error('Pick a customer, service, staff, and branch.'); return
     }
 
     setSaving(true)
@@ -306,9 +575,6 @@ export function NewBookingModal({
         customerId: form.customerId,
         serviceId: form.serviceId,
         staffId: form.staffId,
-        // The slot's startTime is already a full ISO string from the server.
-        // The schema (per our tests) requires a UTC `Z` form — convert here
-        // without shifting the instant: `new Date(iso).toISOString()`.
         scheduledStart: new Date(form.startIso).toISOString(),
         bookingSource: form.bookingSource,
         notes: form.notes.trim().slice(0, 1000) || undefined,
@@ -318,7 +584,6 @@ export function NewBookingModal({
       onClose()
     } catch (err) {
       console.error('[booking] create failed', err)
-      console.error('[booking] fieldErrors', (err as any)?.fieldErrors)
       const first = (err as any)?.fieldErrors?.[0]
       toast.error(
         first
@@ -330,29 +595,54 @@ export function NewBookingModal({
     }
   }
 
+  const branchName =
+    branches.find(b => b.id === form.branchId)?.name ?? 'This branch'
+
+  const emptyReason: EmptyReason = slotsLoading
+    ? { kind: 'loading' }
+    : describeEmpty({
+        branchId: form.branchId,
+        branchName,
+        serviceId: form.serviceId,
+        date: form.date,
+        servicesForBranch,
+        staffForBranchAndService,
+        branchIntervals: branchIntervals ?? -1,
+      })
+
   return (
     <Modal open={open} onClose={onClose} title="New Booking" width="max-w-xl">
       <div className="px-6 py-5 flex flex-col gap-5">
         <StyledSelect
           label="Customer"
           value={form.customerId}
-          placeholder={
-            customers.length === 0 ? 'No customers yet' : 'Select a customer…'
-          }
+          placeholder={customers.length === 0 ? 'No customers yet' : 'Select a customer…'}
           options={customerOptions}
           onChange={id => setForm(f => ({ ...f, customerId: id }))}
         />
 
         <div className="grid grid-cols-2 gap-4">
-          <StyledSelect
-            label="Branch"
-            value={form.branchId}
-            placeholder="Select a branch…"
-            options={branchOptions}
-            onChange={id =>
-              setForm(f => ({ ...f, branchId: id, time: '', startIso: '' }))
-            }
-          />
+          {lockedBranchId ? (
+            <LockedField label="Branch" value={branchName} />
+          ) : (
+            <StyledSelect
+              label="Branch"
+              value={form.branchId}
+              placeholder="Select a branch…"
+              options={branchOptions}
+              onChange={id =>
+                setForm(f => ({
+                  ...f,
+                  branchId: id,
+                  categoryId: '',
+                  serviceId: '',
+                  staffId: '',
+                  time: '',
+                  startIso: '',
+                }))
+              }
+            />
+          )}
           <Input
             label="Date"
             type="date"
@@ -365,30 +655,58 @@ export function NewBookingModal({
 
         <div className="grid grid-cols-2 gap-4">
           <StyledSelect
+            label="Category"
+            value={form.categoryId}
+            placeholder={
+              categoriesForBranch.length === 0
+                ? 'No categories at this branch'
+                : 'Select a category…'
+            }
+            options={categoryOptions}
+            onChange={id =>
+              setForm(f => ({
+                ...f,
+                categoryId: id,
+                serviceId: '',
+                staffId: '',
+                time: '',
+                startIso: '',
+              }))
+            }
+            disabled={categoriesForBranch.length === 0}
+          />
+          <StyledSelect
             label="Service"
             value={form.serviceId}
             placeholder={
-              servicesForBranch.length === 0
-                ? 'No services offered at this branch'
+              servicesInCategory.length === 0
+                ? 'No services in this category'
                 : 'Select a service…'
             }
             options={serviceOptions}
             onChange={id =>
-              setForm(f => ({ ...f, serviceId: id, time: '', startIso: '' }))
+              setForm(f => ({
+                ...f,
+                serviceId: id,
+                staffId: '',
+                time: '',
+                startIso: '',
+              }))
             }
-            disabled={servicesForBranch.length === 0}
-          />
-          <StyledSelect
-            label="Staff"
-            value={form.staffId}
-            placeholder="Any qualified staff"
-            options={staffOptions}
-            onChange={id =>
-              setForm(f => ({ ...f, staffId: id, time: '', startIso: '' }))
-            }
-            disabled={staffForBranchAndService.length === 0}
+            disabled={servicesInCategory.length === 0}
           />
         </div>
+
+        <StyledSelect
+          label="Staff"
+          value={form.staffId}
+          placeholder="Any qualified staff"
+          options={staffOptions}
+          onChange={id =>
+            setForm(f => ({ ...f, staffId: id, time: '', startIso: '' }))
+          }
+          disabled={staffForBranchAndService.length === 0}
+        />
 
         {/* Slot picker */}
         <div>
@@ -396,19 +714,13 @@ export function NewBookingModal({
             Available time
           </label>
 
-          {slotsLoading ? (
-            <p className="text-sm text-ink-3 py-4">Checking availability…</p>
-          ) : slots.length === 0 ? (
-            <div className="bg-surface rounded-xl border border-line px-4 py-4">
-              <p className="text-sm text-ink-3">
-                No slots available for this branch, service, and date.
-                Try another date or adjust the branch/service.
-              </p>
-            </div>
-          ) : (
+          {slots.length > 0 ? (
             <div className="flex flex-wrap gap-2 max-h-56 overflow-y-auto pr-1">
               {slots.map(slot => {
-                const label = `${hhmmFromISO(slot.startTime)} – ${hhmmFromISO(slot.serviceEndTime)}`
+                const label = formatRange(
+                  hhmmFromISO(slot.startTime),
+                  hhmmFromISO(slot.serviceEndTime),
+                )
                 const selected = form.startIso === slot.startTime
                 const staffNames = slot.staff
                   .map(s => `${s.firstName} ${s.lastName}`)
@@ -430,6 +742,12 @@ export function NewBookingModal({
                 )
               })}
             </div>
+          ) : (
+            <EmptyState
+              reason={emptyReason}
+              onOpenBranches={onOpenBranches}
+              onRetry={() => setForm(f => ({ ...f }))}
+            />
           )}
         </div>
 
@@ -462,7 +780,6 @@ export function NewBookingModal({
           onChange={e => setForm(f => ({ ...f, deposit: e.target.value }))}
         />
 
-        {/* Price summary */}
         {svc && form.startIso && (
           <div className="bg-bg rounded-xl px-4 py-3 flex items-center gap-6">
             <div>
@@ -478,7 +795,7 @@ export function NewBookingModal({
             <div>
               <p className="text-xs text-ink-3 mb-0.5">Time</p>
               <p className="font-semibold text-ink">
-                {hhmmFromISO(form.startIso)}
+                {formatClock(hhmmFromISO(form.startIso))}
               </p>
             </div>
           </div>
@@ -500,13 +817,7 @@ export function NewBookingModal({
         <Button
           onClick={handleSubmit}
           loading={saving}
-          disabled={
-            saving ||
-            !svc ||
-            !form.startIso ||
-            servicesForBranch.length === 0 ||
-            staffForBranchAndService.length === 0
-          }
+          disabled={saving || !svc || !form.startIso}
         >
           Create booking
         </Button>
@@ -516,17 +827,24 @@ export function NewBookingModal({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Walk-in — unchanged except for the ISO fix on `buildISO`           */
+/*  Walk-in                                                            */
 /* ------------------------------------------------------------------ */
 
 interface WalkInModalProps {
   open: boolean
   businessId: string
+  /**
+   * When set, the branch is fixed by the app-level filter and the
+   * dropdown is replaced with a non-interactive display. When unset the
+   * user picks a branch from the list.
+   */
+  lockedBranchId?: string
+  branches: Branch[]
   customers: Customer[]
   services: Service[]
+  categories: ServiceCategory[]
   staff: Staff[]
   staffDetails: Map<string, StaffDetail>
-  defaultBranchId: string
   onClose: () => void
   onCreated: (a: Appointment) => void
 }
@@ -534,11 +852,13 @@ interface WalkInModalProps {
 export function WalkInModal({
   open,
   businessId,
+  lockedBranchId,
+  branches,
   customers,
   services,
+  categories,
   staff,
   staffDetails,
-  defaultBranchId,
   onClose,
   onCreated,
 }: WalkInModalProps) {
@@ -546,36 +866,61 @@ export function WalkInModal({
   const [saving, setSaving] = useState(false)
 
   const [form, setForm] = useState({
+    branchId: lockedBranchId ?? '',
     customerId: '',
+    categoryId: '',
     serviceId: '',
     staffId: '',
-    branchId: defaultBranchId,
     notes: '',
   })
 
+  // ── Seed on open ──────────────────────────────────────────────────
   useEffect(() => {
     if (!open) return
+    const validBranchIds = new Set(branches.map(b => b.id))
+
+    const initialBranchId =
+      lockedBranchId && validBranchIds.has(lockedBranchId)
+        ? lockedBranchId
+        : branches[0]?.id ?? ''
+
     const initialServices = services.filter(s =>
-      serviceOfferedAt(s, defaultBranchId),
+      serviceOfferedAt(s, initialBranchId),
     )
-    const initialServiceId = initialServices[0]?.id ?? ''
-    const initialStaff = staffAtBranch(staff, defaultBranchId).filter(m =>
-      staffQualifiedFor(m, initialServiceId, staffDetails),
-    )
+    const initialCategoryId = initialServices[0]?.categoryId ?? ''
+    const initialServiceId =
+      initialServices.find(s => s.categoryId === initialCategoryId)?.id ?? ''
 
     setForm({
+      branchId: initialBranchId,
       customerId: customers[0]?.id ?? '',
+      categoryId: initialCategoryId,
       serviceId: initialServiceId,
-      staffId: initialStaff[0]?.id ?? '',
-      branchId: defaultBranchId,
+      staffId: '',
       notes: '',
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, defaultBranchId])
+  }, [open, lockedBranchId])
 
+  // ── Branch-scoped service catalog ─────────────────────────────────
   const servicesForBranch = useMemo(
     () => services.filter(s => serviceOfferedAt(s, form.branchId)),
     [services, form.branchId],
+  )
+
+  const categoriesForBranch = useMemo(() => {
+    const svcCategoryIds = new Set(servicesForBranch.map(s => s.categoryId))
+    return categories.filter(
+      c => categoryOfferedAt(c, form.branchId) && svcCategoryIds.has(c.id),
+    )
+  }, [categories, servicesForBranch, form.branchId])
+
+  const servicesInCategory = useMemo(
+    () =>
+      form.categoryId
+        ? servicesForBranch.filter(s => s.categoryId === form.categoryId)
+        : servicesForBranch,
+    [servicesForBranch, form.categoryId],
   )
 
   const staffForBranchAndService = useMemo(() => {
@@ -585,20 +930,42 @@ export function WalkInModal({
     )
   }, [staff, form.branchId, form.serviceId, staffDetails])
 
+  // ── Reconcile dependent selects when branch/category/service changes ─
   useEffect(() => {
     setForm(f => {
       let next = f
-      if (f.serviceId && !servicesForBranch.some(s => s.id === f.serviceId)) {
-        next = { ...next, serviceId: servicesForBranch[0]?.id ?? '' }
+
+      if (f.branchId && !branches.some(b => b.id === f.branchId)) {
+        next = { ...next, branchId: branches[0]?.id ?? '' }
       }
+
+      if (f.categoryId && !categoriesForBranch.some(c => c.id === f.categoryId)) {
+        next = {
+          ...next,
+          categoryId: categoriesForBranch[0]?.id ?? '',
+          serviceId: '',
+          staffId: '',
+        }
+      }
+
+      if (f.serviceId && !servicesInCategory.some(s => s.id === f.serviceId)) {
+        next = {
+          ...next,
+          serviceId: servicesInCategory[0]?.id ?? '',
+          staffId: '',
+        }
+      }
+
       const validStaffIds = new Set(staffForBranchAndService.map(s => s.id))
       if (f.staffId && !validStaffIds.has(f.staffId)) {
-        next = { ...next, staffId: staffForBranchAndService[0]?.id ?? '' }
+        next = { ...next, staffId: '' }
       }
+
       return next
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.serviceId, servicesForBranch, staffForBranchAndService])
+  }, [branches, form.branchId, form.categoryId, form.serviceId,
+      categoriesForBranch, servicesInCategory, staffForBranchAndService])
 
   const svc = services.find(s => s.id === form.serviceId) ?? null
 
@@ -607,47 +974,49 @@ export function WalkInModal({
     [customers],
   )
 
+  const branchOptions = useMemo(
+    () => branches.map(b => ({ value: b.id, label: b.name })),
+    [branches],
+  )
+
+  const categoryOptions = useMemo(
+    () => categoriesForBranch.map(c => ({ value: c.id, label: c.name })),
+    [categoriesForBranch],
+  )
+
   const serviceOptions = useMemo(
     () =>
-      servicesForBranch.map(s => ({
+      servicesInCategory.map(s => ({
         value: s.id,
         label: `${s.name} – ${Number(s.price).toLocaleString()} ETB (${s.durationMinutes} min)`,
       })),
-    [servicesForBranch],
+    [servicesInCategory],
   )
 
   const staffOptions = useMemo(
-    () =>
-      staffForBranchAndService.map(s => ({
+    () => [
+      { value: '', label: 'Any qualified staff' },
+      ...staffForBranchAndService.map(s => ({
         value: s.id,
         label: staffName(s) + (s.title ? ` · ${s.title}` : ''),
       })),
+    ],
     [staffForBranchAndService],
   )
 
   async function handleStart() {
-    if (!svc) {
-      toast.error('Pick a service.')
+    if (!form.branchId) {
+      toast.error('Pick a branch.')
       return
     }
-    if (servicesForBranch.length === 0) {
-      toast.error('No services are offered at this branch.')
-      return
-    }
-    if (staffForBranchAndService.length === 0) {
-      toast.error('No qualified staff for this service at this branch.')
-      return
-    }
-    if (!form.customerId || !form.serviceId || !form.staffId || !form.branchId) {
-      toast.error('Pick a customer, service, staff, and branch.')
+    if (!svc) { toast.error('Pick a service.'); return }
+    if (!form.customerId || !form.serviceId) {
+      toast.error('Pick a customer and service.')
       return
     }
 
     setSaving(true)
     try {
-      // Walk-in has no scheduledStart — the server uses "now" in the branch
-      // timezone (guide §5.1). The walk-in validation runs with source=INTERNAL,
-      // so even outside nominal hours it typically succeeds.
       const created = await appointmentsApi.createWalkIn(businessId, {
         branchId: form.branchId,
         customerId: form.customerId,
@@ -660,7 +1029,6 @@ export function WalkInModal({
       onClose()
     } catch (err) {
       console.error('[walk-in] create failed', err)
-      console.error('[walk-in] fieldErrors', (err as any)?.fieldErrors)
       const first = (err as any)?.fieldErrors?.[0]
       toast.error(
         first
@@ -672,6 +1040,9 @@ export function WalkInModal({
     }
   }
 
+  const branchName =
+    branches.find(b => b.id === form.branchId)?.name ?? 'This branch'
+
   return (
     <Modal open={open} onClose={onClose} title="Walk-in" width="max-w-md">
       <div className="px-6 py-5 flex flex-col gap-5">
@@ -682,27 +1053,72 @@ export function WalkInModal({
           </p>
         </div>
 
+        {/* Branch — locked display when the app filter pins a branch,
+            otherwise a normal selectable dropdown. */}
+        {lockedBranchId ? (
+          <LockedField label="Branch" value={branchName} />
+        ) : (
+          <StyledSelect
+            label="Branch"
+            value={form.branchId}
+            placeholder={
+              branches.length === 0 ? 'No branches' : 'Select a branch…'
+            }
+            options={branchOptions}
+            onChange={id =>
+              setForm(f => ({
+                ...f,
+                branchId: id,
+                categoryId: '',
+                serviceId: '',
+                staffId: '',
+              }))
+            }
+            disabled={branches.length === 0}
+          />
+        )}
+
         <StyledSelect
           label="Customer"
           value={form.customerId}
-          placeholder={
-            customers.length === 0 ? 'No customers yet' : 'Select a customer…'
-          }
+          placeholder={customers.length === 0 ? 'No customers yet' : 'Select a customer…'}
           options={customerOptions}
           onChange={id => setForm(f => ({ ...f, customerId: id }))}
+        />
+
+        <StyledSelect
+          label="Category"
+          value={form.categoryId}
+          placeholder={
+            categoriesForBranch.length === 0
+              ? 'No categories at this branch'
+              : 'Select a category…'
+          }
+          options={categoryOptions}
+          onChange={id =>
+            setForm(f => ({
+              ...f,
+              categoryId: id,
+              serviceId: '',
+              staffId: '',
+            }))
+          }
+          disabled={categoriesForBranch.length === 0}
         />
 
         <StyledSelect
           label="Service"
           value={form.serviceId}
           placeholder={
-            servicesForBranch.length === 0
-              ? 'No services offered at this branch'
+            servicesInCategory.length === 0
+              ? servicesForBranch.length === 0
+                ? 'No services offered at this branch'
+                : 'No services in this category'
               : 'Select a service…'
           }
           options={serviceOptions}
-          onChange={id => setForm(f => ({ ...f, serviceId: id }))}
-          disabled={servicesForBranch.length === 0}
+          onChange={id => setForm(f => ({ ...f, serviceId: id, staffId: '' }))}
+          disabled={servicesInCategory.length === 0}
         />
 
         <StyledSelect
@@ -711,7 +1127,7 @@ export function WalkInModal({
           placeholder={
             staffForBranchAndService.length === 0
               ? 'No qualified staff at this branch'
-              : 'Select a staff member…'
+              : 'Any qualified staff'
           }
           options={staffOptions}
           onChange={id => setForm(f => ({ ...f, staffId: id }))}
@@ -741,12 +1157,7 @@ export function WalkInModal({
         <Button
           onClick={handleStart}
           loading={saving}
-          disabled={
-            saving ||
-            !svc ||
-            servicesForBranch.length === 0 ||
-            staffForBranchAndService.length === 0
-          }
+          disabled={saving || !svc || servicesForBranch.length === 0}
         >
           Start appointment
         </Button>
@@ -763,24 +1174,19 @@ function extractErrorMessage(err: unknown, fallback = 'Something went wrong.'): 
   if (!err) return fallback
   const anyErr = err as any
 
-  // ApiError.fieldErrors — canonical shape from normalizeError
   if (Array.isArray(anyErr?.fieldErrors) && anyErr.fieldErrors.length > 0) {
     const f = anyErr.fieldErrors[0]
     const prefix = f.field ? `${f.field}: ` : ''
     return `${prefix}${f.message}`
   }
-
-  // ApiError.details — non-array object details (rare)
-  if (
-    anyErr?.details &&
-    typeof anyErr.details === 'object' &&
-    !Array.isArray(anyErr.details)
-  ) {
-    const d = anyErr.details as Record<string, unknown>
-    if (typeof d.message === 'string') return d.message
+  if (Array.isArray(anyErr?.details) && anyErr.details.length > 0) {
+    const d = anyErr.details[0]
+    if (typeof d === 'string') return d
+    if (d && typeof d === 'object') {
+      const field = d.field ? `${d.field}: ` : ''
+      return `${field}${d.message ?? JSON.stringify(d)}`
+    }
   }
-
-  // Raw server response (if it ever leaks through)
   const data = anyErr?.response?.data ?? anyErr?.data ?? anyErr
   if (Array.isArray(data?.errors) && data.errors.length > 0) {
     return String(data.errors[0])
@@ -793,7 +1199,6 @@ function extractErrorMessage(err: unknown, fallback = 'Something went wrong.'): 
       return `${field}${d.message ?? JSON.stringify(d)}`
     }
   }
-
   if (typeof data?.message === 'string' && data.message) return data.message
   if (typeof anyErr?.message === 'string' && anyErr.message) return anyErr.message
   return fallback

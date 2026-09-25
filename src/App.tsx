@@ -12,16 +12,20 @@ import type {
 } from "./types"
 import type {
   Appointment,
+  AppointmentStaffRef,
   Branch,
   Customer,
   Service,
+  ServiceCategory,
   Staff as StaffMember,
   StaffDetail,
 } from "./types/api"
 import { useAuth } from "./hooks/useAuth"
 import { useBusiness } from "./contexts/BusinessContext"
+import { useBranch } from "./contexts/BranchContext"
 import { isNetworkError } from "./api/errors"
 import { servicesApi } from "./api/services.api"
+import { serviceCategoriesApi } from "./api/service-categories.api"
 import { staffApi } from "./api/staff.api"
 import { branchesApi } from "./api/branches.api"
 import { customersApi } from "./api/customers.api"
@@ -76,10 +80,29 @@ function BootScreen() {
   )
 }
 
+/**
+ * Normalize an appointment's staff reference. The payload sends a single
+ * object with an `id` field (see types/api.ts). Older serializers or
+ * transitional clients may shape it as an array with `staffId`, so we
+ * tolerate both here — one helper, used by every consumer below.
+ */
+function appointmentStaff(
+  a: Appointment | null | undefined,
+): AppointmentStaffRef | null {
+  if (!a) return null
+  const raw = a.staff as unknown
+  if (!raw) return null
+  if (Array.isArray(raw)) {
+    return ((raw[0] as AppointmentStaffRef) ?? null)
+  }
+  return raw as AppointmentStaffRef
+}
+
 export default function App() {
-  /* ── Auth + business context ─────────────────────────────────────── */
+  /* ── Auth + business + branch context ────────────────────────────── */
   const { status, user, logout } = useAuth()
   const { activeBusinessId, isAdminOrOwner } = useBusiness()
+  const { activeBranchFilter } = useBranch()
   const toast = useToast()
 
   /* ── Auth flow state ─────────────────────────────────────────────── */
@@ -146,12 +169,13 @@ export default function App() {
 
   /* ── App data ────────────────────────────────────────────────────── */
   //
-  // Migrated slices: appointments, services, staff (+ details), branches,
-  // customers. Still mock: feedback, transactions, expense categories,
-  // payment methods, settings.
+  // Migrated slices: appointments, services, categories, staff
+  // (+ details), branches, customers. Still mock: feedback,
+  // transactions, expense categories, payment methods, settings.
 
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [services, setServices] = useState<Service[]>([])
+  const [categories, setCategories] = useState<ServiceCategory[]>([])
   const [staffList, setStaffList] = useState<StaffMember[]>([])
   const [staffDetails, setStaffDetails] = useState<Map<string, StaffDetail>>(
     () => new Map(),
@@ -161,6 +185,8 @@ export default function App() {
 
   const [apptLoading, setApptLoading] = useState(false)
   const [dataLoading, setDataLoading] = useState(false)
+  void apptLoading
+  void dataLoading
 
   const [feedback, setFeedback] = useState<FeedbackItem[]>(initialFeedback)
   const [transactions, setTransactions] =
@@ -209,12 +235,13 @@ export default function App() {
 
   /* ── Support slices fetch ────────────────────────────────────────── */
   //
-  // services + staff (+ each staff's detail for qualification filtering)
-  // + branches + customers. One Promise.all for the list calls, then a
-  // second parallel batch for the staff details (which are per-id).
+  // services + categories + staff (+ each staff's detail for qualification
+  // filtering) + branches + customers. One Promise.all for the list calls,
+  // then a second parallel batch for the staff details (which are per-id).
   useEffect(() => {
     if (!activeBusinessId) {
       setServices([])
+      setCategories([])
       setStaffList([])
       setStaffDetails(new Map())
       setBranches([])
@@ -227,8 +254,9 @@ export default function App() {
 
     ;(async () => {
       try {
-        const [svcRes, staffRes, brRes, custRes] = await Promise.all([
+        const [svcRes, catRes, staffRes, brRes, custRes] = await Promise.all([
           servicesApi.list(activeBusinessId),
+          serviceCategoriesApi.list(activeBusinessId),
           staffApi.list(activeBusinessId),
           branchesApi.list(activeBusinessId),
           customersApi.list(activeBusinessId, { limit: 100 }),
@@ -237,6 +265,7 @@ export default function App() {
 
         const staffMembers = normalizeArray<StaffMember>(staffRes)
         setServices(normalizeArray<Service>(svcRes))
+        setCategories(normalizeArray<ServiceCategory>(catRes))
         setStaffList(staffMembers)
         setBranches(
           normalizeArray<Branch>(brRes).filter(b => b.isActive),
@@ -281,6 +310,59 @@ export default function App() {
     () => branches.find(b => b.id === selectedAppt?.branchId) ?? null,
     [branches, selectedAppt?.branchId],
   )
+
+  /* ── Resolved display data for the selected appointment ──────────── */
+  //
+  // The list endpoint already joins `customer` onto each appointment, so
+  // we prefer that. Falling back to a lookup in the `customers` array keeps
+  // things working if the payload ever drops the join.
+  const selectedCustomer = useMemo(
+    () => customers.find(c => c.id === selectedAppt?.customerId) ?? null,
+    [customers, selectedAppt?.customerId],
+  )
+
+  const selectedCustomerName = useMemo(() => {
+    // Prefer the joined customer on the appointment payload.
+    const joined = selectedAppt?.customer
+    if (joined) {
+      const name = `${joined.firstName ?? ""} ${joined.lastName ?? ""}`.trim()
+      if (name) return name
+    }
+    if (!selectedCustomer) return undefined
+    return `${selectedCustomer.firstName} ${selectedCustomer.lastName}`.trim()
+  }, [selectedAppt?.customer, selectedCustomer])
+
+  const selectedCustomerPhone = useMemo(() => {
+    // Prefer the joined phones.
+    const joinedPhones = selectedAppt?.customer?.phones ?? []
+    const joinedPrimary =
+      joinedPhones.find(p => p.isPrimary) ?? joinedPhones[0]
+    if (joinedPrimary?.phone) return joinedPrimary.phone
+
+    const phones = selectedCustomer?.phones ?? []
+    const primary = phones.find(p => p.isPrimary) ?? phones[0]
+    return primary?.phone
+  }, [selectedAppt?.customer?.phones, selectedCustomer])
+
+  const selectedStaffMember = useMemo(() => {
+    const ref = appointmentStaff(selectedAppt)
+    const refId = ref?.id ?? ref?.staffId
+    if (!refId) return null
+    return staffList.find(s => s.id === refId) ?? null
+  }, [staffList, selectedAppt])
+
+  const selectedStaffName = useMemo(() => {
+    if (selectedStaffMember) {
+      return `${selectedStaffMember.firstName} ${selectedStaffMember.lastName}`.trim()
+    }
+    // Fall back to the name on the payload, if it carries one.
+    const ref = appointmentStaff(selectedAppt)
+    if (ref) {
+      const name = `${ref.firstName ?? ""} ${ref.lastName ?? ""}`.trim()
+      if (name) return name
+    }
+    return undefined
+  }, [selectedStaffMember, selectedAppt])
 
   /* ── Helpers ─────────────────────────────────────────────────────── */
   function updateAppointment(id: string, changes: Partial<Appointment>) {
@@ -361,41 +443,100 @@ export default function App() {
         )
 
       case "bookings":
-        return (
-          <div className="flex h-full overflow-hidden">
-            <div className="flex-1 overflow-hidden">
-              <BookingDashboard
-                // Adapter — legacy BookingDashboard still consumes the
-                // mock Appointment shape. Delete once migrated.
-                appointments={appointments.map(toMockAppt)}
-                onSelectAppointment={mockAppt => {
-                  const real = appointments.find(a => a.id === mockAppt.id)
-                  if (!real) return
-                  setSelectedAppt(prev => (prev?.id === real.id ? null : real))
-                }}
-                onNewBooking={() => setShowNewBooking(true)}
-                onWalkIn={() => setShowWalkIn(true)}
-                onUpdateAppointment={(id, changes) =>
-                  updateAppointment(id, mockChangesToApiChanges(changes))
-                }
-              />
-            </div>
-            {selectedAppt && (
-              <AppointmentPanel
-                appointment={selectedAppt}
-                businessId={activeBusinessId!}
-                timezone={selectedBranch?.timezone}
-                onClose={() => setSelectedAppt(null)}
-                onChanged={updated => {
-                  setAppointments(prev =>
-                    prev.map(a => (a.id === updated.id ? updated : a)),
-                  )
-                  setSelectedAppt(updated)
-                }}
-              />
-            )}
-          </div>
-        )
+  return (
+    <div className="relative h-full overflow-hidden">
+      <div className="h-full overflow-hidden">
+        <BookingDashboard
+          appointments={appointments}
+          customers={customers}
+          branches={branches}
+          staff={staffList}
+          timezone={branches[0]?.timezone}
+          activeBranchId={activeBranchFilter ?? null}
+          onSelectAppointment={appt =>
+            setSelectedAppt(prev => (prev?.id === appt.id ? null : appt))
+          }
+          onNewBooking={() => setShowNewBooking(true)}
+          onWalkIn={() => setShowWalkIn(true)}
+          onUpdateAppointment={updateAppointment}
+        />
+      </div>
+
+      {/* ── Mobile backdrop (below lg) ──────────────────────────── */}
+      {selectedAppt && (
+        <div
+          className="
+            fixed inset-0 z-40 bg-ink/30 backdrop-blur-[2px]
+            transition-opacity duration-200 ease-out
+            opacity-100
+            lg:hidden
+          "
+          onClick={() => setSelectedAppt(null)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* ── Desktop right panel (lg+) ───────────────────────────── */}
+      <div
+        className="
+          hidden lg:block
+          absolute inset-y-0 right-0 z-30
+          overflow-hidden
+          transition-[width] duration-200 ease-out
+        "
+        style={{ width: selectedAppt ? 320 : 0 }}
+      >
+        {selectedAppt && (
+          <AppointmentPanel
+            appointment={selectedAppt}
+            businessId={activeBusinessId!}
+            timezone={selectedBranch?.timezone}
+            branchName={selectedBranch?.name}
+            customerName={selectedCustomerName}
+            customerPhone={selectedCustomerPhone}
+            staffName={selectedStaffName}
+            onClose={() => setSelectedAppt(null)}
+            onChanged={updated => {
+              setAppointments(prev =>
+                prev.map(a => (a.id === updated.id ? updated : a)),
+              )
+              setSelectedAppt(updated)
+            }}
+          />
+        )}
+      </div>
+
+      {/* ── Mobile bottom sheet (below lg) ──────────────────────── */}
+      {selectedAppt && (
+        <div
+          className="
+            lg:hidden
+            fixed inset-x-0 bottom-0 z-50
+            max-h-[85vh] rounded-t-2xl overflow-hidden
+            bg-surface border-t border-line shadow-2xl
+            animate-sheet-in
+          "
+        >
+          <AppointmentPanel
+            appointment={selectedAppt}
+            businessId={activeBusinessId!}
+            timezone={selectedBranch?.timezone}
+            branchName={selectedBranch?.name}
+            customerName={selectedCustomerName}
+            customerPhone={selectedCustomerPhone}
+            staffName={selectedStaffName}
+            onClose={() => setSelectedAppt(null)}
+            onChanged={updated => {
+              setAppointments(prev =>
+                prev.map(a => (a.id === updated.id ? updated : a)),
+              )
+              setSelectedAppt(updated)
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
 
       case "services":
         return <ServicesPage />
@@ -457,6 +598,9 @@ export default function App() {
     }
   }
 
+  // Locked branch for the New Booking modal when the app-level filter is on.
+  const lockedBranchId = activeBranchFilter ?? undefined
+
   return (
     <AppShell activeSection={navSection} onNavigate={setNavSection}>
       {renderSection()}
@@ -464,8 +608,10 @@ export default function App() {
       <NewBookingModal
         open={showNewBooking}
         businessId={activeBusinessId!}
+        lockedBranchId={lockedBranchId}
         customers={customers}
         services={services}
+        categories={categories}
         staff={staffList}
         staffDetails={staffDetails}
         branches={branches}
@@ -474,16 +620,22 @@ export default function App() {
           setAppointments(prev => [...prev, appt])
           setSelectedAppt(appt)
         }}
+        onOpenBranches={() => {
+          setShowNewBooking(false)
+          setNavSection("branches")
+        }}
       />
 
       <WalkInModal
         open={showWalkIn}
         businessId={activeBusinessId!}
+        lockedBranchId={activeBranchFilter ?? undefined}
+        branches={branches}
         customers={customers}
         services={services}
+        categories={categories}
         staff={staffList}
         staffDetails={staffDetails}
-        defaultBranchId={branches[0]?.id ?? ""}
         onClose={() => setShowWalkIn(false)}
         onCreated={appt => {
           setAppointments(prev => [...prev, appt])
@@ -499,16 +651,29 @@ export default function App() {
 /* ------------------------------------------------------------------ */
 
 function toMockAppt(a: Appointment): any {
-  const staffRef = a.staff[0]
+  const ref = appointmentStaff(a)
+  const refId = ref?.id ?? ref?.staffId ?? ""
+  const refName = ref
+    ? `${ref.firstName ?? ""} ${ref.lastName ?? ""}`.trim()
+    : ""
+
+  // Prefer the joined customer for the name/phone. Fall back to
+  // placeholder strings only when nothing is available.
+  const joinedName = a.customer
+    ? `${a.customer.firstName ?? ""} ${a.customer.lastName ?? ""}`.trim()
+    : ""
+  const joinedPrimary =
+    a.customer?.phones?.find(p => p.isPrimary) ?? a.customer?.phones?.[0]
+
   return {
     id: a.id,
     customerId: a.customerId,
-    customerName: "Customer",
-    customerPhone: "",
+    customerName: joinedName || "Customer",
+    customerPhone: joinedPrimary?.phone ?? "",
     serviceId: a.service.id,
     serviceName: a.service.name,
-    staffId: staffRef?.staffId ?? "",
-    staffName: staffRef ? `${staffRef.firstName} ${staffRef.lastName}` : "—",
+    staffId: refId,
+    staffName: refName || "—",
     branchId: a.branchId,
     branchName: a.branchId,
     date: a.scheduledStart.slice(0, 10),
@@ -536,12 +701,6 @@ function mockStatusFromApi(s: Appointment["status"]): string {
   }
 }
 
-function mockChangesToApiChanges(changes: any): Partial<Appointment> {
-  const out: Partial<Appointment> = {}
-  if (changes?.notes !== undefined) out.notes = changes.notes ?? null
-  return out
-}
-
 /* ------------------------------------------------------------------ */
 /*  Response helpers                                                   */
 /* ------------------------------------------------------------------ */
@@ -557,6 +716,12 @@ function normalizeArray<T>(res: unknown): T[] {
 function extractErrorMessage(err: unknown, fallback = "Something went wrong."): string {
   if (!err) return fallback
   const anyErr = err as any
+
+  if (Array.isArray(anyErr?.fieldErrors) && anyErr.fieldErrors.length > 0) {
+    const f = anyErr.fieldErrors[0]
+    const prefix = f.field ? `${f.field}: ` : ""
+    return `${prefix}${f.message}`
+  }
 
   if (Array.isArray(anyErr?.details) && anyErr.details.length > 0) {
     const d = anyErr.details[0]
