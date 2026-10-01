@@ -18,10 +18,17 @@ export default defineConfig(({ mode }) => {
     build: {
       sourcemap: emitSourcemaps ? 'inline' : false,
       minify: !emitSourcemaps,
+      rollupOptions: {
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          customer: path.resolve(__dirname, 'customer.html'),
+        },
+      },
     },
     plugins: [
       react(),
       tailwindcss(),
+      customerDevFallback(), 
       figmaSiteConfiguration(siteConfiguration),
       figmaErrorOverlayReplay(),
       figmaReactRefreshBoundaryFallback(),
@@ -87,6 +94,21 @@ type FigmaSiteConfiguration = {
   }
   accessibility?: {
     addBypassLinks?: boolean
+  }
+}
+
+function customerDevFallback(): Plugin {
+  return {
+    name: 'customer-dev-fallback',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url && req.url.startsWith('/book/')) {
+          req.url = '/customer.html'
+        }
+        next()
+      })
+    },
   }
 }
 

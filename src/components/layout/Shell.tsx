@@ -1,3 +1,5 @@
+// src/components/layout/AppShell.tsx
+
 import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { NavSection } from '../../types'
 import { useBusiness } from '../../contexts/BusinessContext'
@@ -7,14 +9,18 @@ interface ShellProps {
   children: ReactNode
   activeSection: NavSection
   onNavigate: (s: NavSection) => void
+  /** Called when the user picks "Log out" from the account menu. */
+  onLogout?: () => void
 }
 
-export function AppShell({ children, activeSection, onNavigate }: ShellProps) {
-  // Sidebar state for mobile: hidden by default, toggled by the hamburger.
-  // On lg+ screens the sidebar is always visible regardless of this flag.
+export function AppShell({
+  children,
+  activeSection,
+  onNavigate,
+  onLogout,
+}: ShellProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
-  // Close the mobile drawer whenever the user navigates.
   function handleNavigate(section: NavSection) {
     onNavigate(section)
     setMobileNavOpen(false)
@@ -24,7 +30,11 @@ export function AppShell({ children, activeSection, onNavigate }: ShellProps) {
     <div className="flex h-full bg-bg overflow-hidden">
       {/* Desktop sidebar — fixed width, hidden below lg */}
       <div className="hidden lg:flex">
-        <Sidebar active={activeSection} onNavigate={handleNavigate} />
+        <Sidebar
+          active={activeSection}
+          onNavigate={handleNavigate}
+          onLogout={onLogout}
+        />
       </div>
 
       {/* Mobile drawer — overlay + slide-in sidebar */}
@@ -40,6 +50,7 @@ export function AppShell({ children, activeSection, onNavigate }: ShellProps) {
               active={activeSection}
               onNavigate={handleNavigate}
               onClose={() => setMobileNavOpen(false)}
+              onLogout={onLogout}
             />
           </div>
         </div>
@@ -75,11 +86,12 @@ function Sidebar({
   active,
   onNavigate,
   onClose,
+  onLogout,
 }: {
   active: NavSection
   onNavigate: (s: NavSection) => void
-  /** Only provided when rendered as a mobile drawer — shows the close button. */
   onClose?: () => void
+  onLogout?: () => void
 }) {
   const { activeMembership } = useBusiness()
   const businessName = activeMembership?.business?.name ?? 'Z-salon'
@@ -93,6 +105,7 @@ function Sidebar({
         </div>
         {onClose && (
           <button
+            type="button"
             onClick={onClose}
             aria-label="Close menu"
             className="lg:hidden w-8 h-8 flex items-center justify-center rounded-lg text-white/50 hover:text-white/80 hover:bg-white/6 transition-colors"
@@ -111,6 +124,7 @@ function Sidebar({
           const isEnabled = item.enabled
           return (
             <button
+              type="button"
               key={item.id}
               onClick={() => isEnabled && onNavigate(item.id)}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 w-full text-left
@@ -134,6 +148,7 @@ function Sidebar({
 
       <div className="px-3 pb-2">
         <button
+          type="button"
           onClick={() => onNavigate('settings' as NavSection)}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 w-full text-left
             ${active === ('settings' as NavSection) ? 'bg-white/12 text-surface' : 'text-white/50 hover:bg-white/6 hover:text-white/80'}`}
@@ -145,18 +160,122 @@ function Sidebar({
         </button>
       </div>
 
+      {/* Account chip — clickable, opens a small popover with Log out. */}
       <div className="px-3 pb-5">
-        <div className="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-white/6 transition-colors cursor-pointer">
-          <div className="w-8 h-8 rounded-full bg-warm flex items-center justify-center text-ink text-xs font-semibold flex-shrink-0">
-            {businessName.charAt(0).toUpperCase()}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-surface text-sm font-medium truncate">{businessName}</p>
-            <p className="text-white/35 text-xs truncate">Business</p>
-          </div>
-        </div>
+        <AccountMenu
+          businessName={businessName}
+          onLogout={onLogout}
+        />
       </div>
     </aside>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  AccountMenu — the business-name chip + popover                     */
+/* ------------------------------------------------------------------ */
+
+function AccountMenu({
+  businessName,
+  onLogout,
+}: {
+  businessName: string
+  onLogout?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  function handleLogout(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    setOpen(false)
+    // Fire immediately. If the parent swaps the tree on logout, the
+    // closing animation doesn't matter — the component unmounts anyway.
+    onLogout?.()
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={`
+          w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-colors text-left
+          ${open ? 'bg-white/10' : 'hover:bg-white/6'}
+        `}
+      >
+        <div className="w-8 h-8 rounded-full bg-warm flex items-center justify-center text-ink text-xs font-semibold flex-shrink-0">
+          {businessName.charAt(0).toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-surface text-sm font-medium truncate">{businessName}</p>
+          <p className="text-white/35 text-xs truncate">Business</p>
+        </div>
+        <svg
+          width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          className={`text-white/40 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="
+            absolute bottom-full left-0 right-0 mb-2
+            bg-surface border border-line rounded-xl
+            shadow-lg shadow-black/20
+            overflow-hidden z-30
+          "
+        >
+          <div className="px-4 py-3 border-b border-line">
+            <p className="text-sm font-medium text-ink truncate">{businessName}</p>
+            <p className="text-xs text-ink-3 mt-0.5 truncate">Signed in</p>
+          </div>
+
+          <button
+            type="button"
+            role="menuitem"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={handleLogout}
+            className="
+              w-full flex items-center gap-2.5 px-4 py-2.5
+              text-sm text-left text-[#B03A3A]
+              hover:bg-[#FBEDED] transition-colors
+              cursor-pointer
+            "
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Log out
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -182,6 +301,7 @@ function TopBar({ section, onMenuClick }: { section: NavSection; onMenuClick: ()
     <header className="h-14 bg-surface border-b border-line flex items-center justify-between gap-2 px-4 sm:px-6 flex-shrink-0">
       <div className="flex items-center gap-3 min-w-0">
         <button
+          type="button"
           onClick={onMenuClick}
           aria-label="Open menu"
           className="lg:hidden -ml-1 w-9 h-9 rounded-xl flex items-center justify-center text-ink-3 hover:bg-warm-subtle hover:text-ink transition-colors flex-shrink-0"
@@ -299,8 +419,8 @@ function BranchSelect({
             const isSelected = o.value === value
             return (
               <button
-                key={o.value}
                 type="button"
+                key={o.value}
                 onClick={() => { onChange(o.value); setOpen(false) }}
                 className={`
                   w-full px-3 py-2 text-left text-xs
@@ -369,6 +489,7 @@ function NotificationsButton() {
   return (
     <div className="relative" ref={ref}>
       <button
+        type="button"
         onClick={() => setOpen(o => !o)}
         aria-label="Notifications"
         className="w-8 h-8 rounded-xl flex items-center justify-center text-ink-3 hover:bg-warm-subtle hover:text-ink transition-colors relative flex-shrink-0"
@@ -393,6 +514,7 @@ function NotificationsButton() {
             <p className="text-sm font-medium text-ink">Notifications</p>
             {items.length > 0 && unread > 0 && (
               <button
+                type="button"
                 onClick={markAllRead}
                 className="text-xs text-ink-3 hover:text-ink-2 transition-colors"
               >

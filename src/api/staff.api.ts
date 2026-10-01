@@ -1,5 +1,3 @@
-// src/api/staff.api.ts
-
 import { http } from './http';
 import type {
   Staff,

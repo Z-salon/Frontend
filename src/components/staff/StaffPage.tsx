@@ -1,5 +1,3 @@
-// src/components/staff/StaffPage.tsx
-
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Branch,
@@ -12,6 +10,8 @@ import type {
   StaffTimeOff,
   WeeklySchedule,
   DayOfWeek,
+  FeedbackSubmission,
+  FeedbackCategoryType,
 } from '../../types/api'
 import { Button, Input, Textarea, Toggle, Modal } from '../ui'
 import { EmptyState } from '../services/ServicesPage'
@@ -22,6 +22,7 @@ import { staffApi } from '../../api/staff.api'
 import { branchesApi } from '../../api/branches.api'
 import { servicesApi } from '../../api/services.api'
 import { serviceCategoriesApi } from '../../api/service-categories.api'
+import { feedbackApi } from '../../api/feedback.api'
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -121,8 +122,7 @@ function formatTime12h(hhmm: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  TimeInput — custom styled dropdown + typeable field                */
-/*  Supports `fullWidth` (stretch) and `compact` (narrow) modes        */
+/*  TimeInput                                                          */
 /* ------------------------------------------------------------------ */
 
 const HOURS_12 = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const
@@ -365,7 +365,7 @@ function ClockIcon() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  DateInput — styled custom calendar dropdown                        */
+/*  DateInput                                                          */
 /* ------------------------------------------------------------------ */
 
 const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const
@@ -1160,15 +1160,324 @@ function StaffDetailView({
         )}
 
         {activeTab === 'feedback' && (
-          <div className="max-w-2xl flex flex-col gap-3">
-            <p className="text-ink-3 text-sm py-10 text-center">
-              Feedback integration coming soon.
-            </p>
-          </div>
+          <StaffFeedbackTab
+            staffId={detail.id}
+            staffName={`${detail.firstName} ${detail.lastName}`.trim()}
+          />
         )}
       </div>
     </div>
   )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Staff feedback tab (§12)                                           */
+/*                                                                     */
+/*  Loads all feedback submissions for the business and filters        */
+/*  locally by the staff member id on the appointment. The API        */
+/*  doesn't currently support a `staff_id` filter, so we do the        */
+/*  filtering client-side.                                             */
+/* ------------------------------------------------------------------ */
+
+interface UiStaffFeedback {
+  id: string
+  anonymous: boolean
+  customerName: string | null
+  serviceName: string
+  branchName: string
+  date: string
+  overallRating: number
+  staffRating: number
+  experienceRating: number
+  hygieneRating: number
+  serviceQualityRating: number
+  waitingRating: number
+  comment: string | null
+  extraResponses: Array<{
+    categoryName: string
+    type: FeedbackCategoryType
+    rating: number | null
+    text: string | null
+    boolean: boolean | null
+  }>
+}
+
+function StaffFeedbackTab({
+  staffId,
+  staffName,
+}: {
+  staffId: string
+  staffName: string
+}) {
+  const toast = useToast()
+  const { activeBusinessId } = useBusiness()
+
+  const [items, setItems] = useState<UiStaffFeedback[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!activeBusinessId) return
+    let cancelled = false
+
+    setLoading(true)
+    ;(async () => {
+      try {
+        const res = await feedbackApi.list(activeBusinessId, { limit: 100 })
+        const subs = unwrapArray<FeedbackSubmission>(res)
+
+        // Filter to submissions whose appointment includes this staff id.
+        const mine = subs.filter(s =>
+          (s.appointment?.staff ?? []).some(m => m.id === staffId),
+        )
+
+        const mapped = mine.map(s => normalizeForStaffTab(s))
+        if (!cancelled) setItems(mapped)
+      } catch (err) {
+        if (cancelled) return
+        console.error('[staff] feedback load failed', err)
+        toast.error(extractErrorMessage(err, 'Could not load feedback.'))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBusinessId, staffId])
+
+  if (loading) {
+    return <LoadingState label="Loading feedback…" />
+  }
+
+  if (items.length === 0) {
+    return (
+      <div className="max-w-2xl">
+        <div className="bg-surface rounded-2xl border border-line px-6 py-10 text-center">
+          <div className="w-12 h-12 rounded-2xl bg-[#FBF5EA] flex items-center justify-center mx-auto mb-4">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#7A5F2C" strokeWidth="1.8">
+              <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+            </svg>
+          </div>
+          <p className="text-sm font-medium text-ink mb-1">No feedback yet</p>
+          <p className="text-xs text-ink-3 max-w-sm mx-auto">
+            {staffName} hasn't received any customer feedback yet. Reviews
+            submitted after completed appointments will appear here.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const avgOverall = items.length
+    ? (items.reduce((s, f) => s + f.overallRating, 0) / items.length).toFixed(1)
+    : '—'
+  const avgStaff = items.length
+    ? (items.reduce((s, f) => s + f.staffRating, 0) / items.length).toFixed(1)
+    : '—'
+
+  return (
+    <div className="max-w-2xl flex flex-col gap-5">
+      {/* Metric cards */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-surface rounded-2xl border border-line px-4 py-3.5 min-w-0">
+          <p className="text-[11px] text-ink-3 mb-1 truncate">Reviews</p>
+          <p className="font-display text-xl text-ink truncate">{items.length}</p>
+        </div>
+        <div className="bg-surface rounded-2xl border border-line px-4 py-3.5 min-w-0">
+          <p className="text-[11px] text-ink-3 mb-1 truncate">Overall</p>
+          <p className="font-display text-xl text-ink truncate">
+            {avgOverall} <span className="text-base font-normal text-warm">★</span>
+          </p>
+        </div>
+        <div className="bg-surface rounded-2xl border border-line px-4 py-3.5 min-w-0">
+          <p className="text-[11px] text-ink-3 mb-1 truncate">Staff</p>
+          <p className="font-display text-xl text-ink truncate">
+            {avgStaff} <span className="text-base font-normal text-warm">★</span>
+          </p>
+        </div>
+      </div>
+
+      {/* Feedback list */}
+      <div className="flex flex-col gap-2">
+        {items.map(f => (
+          <div
+            key={f.id}
+            className="bg-surface rounded-2xl border border-line p-4"
+          >
+            <div className="flex items-start gap-3 mb-2">
+              <MiniStars rating={f.overallRating} />
+              <span className="text-sm font-medium text-ink flex-1 min-w-0 truncate">
+                {f.anonymous ? 'Anonymous' : f.customerName ?? 'Anonymous'}
+              </span>
+              <span className="text-xs text-ink-3 flex-shrink-0">{f.date}</span>
+            </div>
+
+            <p className="text-xs text-ink-3 mb-2 truncate">
+              {f.serviceName} · {f.branchName}
+            </p>
+
+            {f.comment && (
+              <p className="text-sm text-ink-2 leading-relaxed mb-3">
+                "{f.comment}"
+              </p>
+            )}
+
+            {/* Additional numeric ratings, if any differ from the defaults */}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-3">
+              {f.staffRating > 0 && (
+                <span>Staff: <span className="text-ink-2 font-medium">{f.staffRating}</span></span>
+              )}
+              {f.experienceRating > 0 && (
+                <span>Experience: <span className="text-ink-2 font-medium">{f.experienceRating}</span></span>
+              )}
+              {f.hygieneRating > 0 && (
+                <span>Hygiene: <span className="text-ink-2 font-medium">{f.hygieneRating}</span></span>
+              )}
+              {f.serviceQualityRating > 0 && (
+                <span>Quality: <span className="text-ink-2 font-medium">{f.serviceQualityRating}</span></span>
+              )}
+              {f.waitingRating > 0 && (
+                <span>Wait: <span className="text-ink-2 font-medium">{f.waitingRating}</span></span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Map a FeedbackSubmission into the staff-tab's flattened shape.
+ * Same category-matching logic as the main FeedbackPage so numbers
+ * align across both views.
+ */
+function normalizeForStaffTab(s: FeedbackSubmission): UiStaffFeedback {
+  const serviceName = s.appointment?.service?.name ?? '—'
+  const branchName  = s.appointment?.branch?.name ?? '—'
+
+  const date = s.submittedAt
+    ? new Date(s.submittedAt).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : '—'
+
+  let overallRating = 0
+  let staffRating = 0
+  let experienceRating = 0
+  let hygieneRating = 0
+  let serviceQualityRating = 0
+  let waitingRating = 0
+
+  let comment: string | null = null
+  const extraResponses: UiStaffFeedback['extraResponses'] = []
+
+  for (const r of s.responses) {
+    const name = r.category?.name ?? ''
+    const type = r.category?.type ?? 'RATING'
+
+    if (type === 'RATING' && r.ratingValue != null) {
+      const slot = matchFeedbackCategory(name)
+      if (slot === 'overallRating') overallRating = r.ratingValue
+      else if (slot === 'staffRating') staffRating = r.ratingValue
+      else if (slot === 'experienceRating') experienceRating = r.ratingValue
+      else if (slot === 'hygieneRating') hygieneRating = r.ratingValue
+      else if (slot === 'serviceQualityRating') serviceQualityRating = r.ratingValue
+      else if (slot === 'waitingRating') waitingRating = r.ratingValue
+      else {
+        extraResponses.push({
+          categoryName: name,
+          type,
+          rating: r.ratingValue,
+          text: null,
+          boolean: null,
+        })
+      }
+    } else if (type === 'TEXT' && r.textResponse) {
+      if (!comment) comment = r.textResponse
+      else {
+        extraResponses.push({
+          categoryName: name,
+          type,
+          rating: null,
+          text: r.textResponse,
+          boolean: null,
+        })
+      }
+    } else if (type === 'BOOLEAN' && r.booleanResponse != null) {
+      extraResponses.push({
+        categoryName: name,
+        type,
+        rating: null,
+        text: null,
+        boolean: r.booleanResponse,
+      })
+    }
+  }
+
+  if (overallRating === 0) {
+    const numeric = [
+      staffRating,
+      experienceRating,
+      hygieneRating,
+      serviceQualityRating,
+      waitingRating,
+    ].filter(v => v > 0)
+    if (numeric.length > 0) {
+      overallRating = Math.round(
+        numeric.reduce((s, v) => s + v, 0) / numeric.length,
+      )
+    }
+  }
+
+  return {
+    id: s.id,
+    anonymous: s.isAnonymous,
+    customerName: s.customer
+      ? `${s.customer.firstName} ${s.customer.lastName}`.trim()
+      : null,
+    serviceName,
+    branchName,
+    date,
+    overallRating,
+    staffRating,
+    experienceRating,
+    hygieneRating,
+    serviceQualityRating,
+    waitingRating,
+    comment,
+    extraResponses,
+  }
+}
+
+type FeedbackCategorySlot =
+  | 'overallRating'
+  | 'staffRating'
+  | 'experienceRating'
+  | 'hygieneRating'
+  | 'serviceQualityRating'
+  | 'waitingRating'
+
+const FEEDBACK_CATEGORY_MATCHERS: Array<{
+  key: FeedbackCategorySlot
+  patterns: string[]
+}> = [
+  { key: 'overallRating',        patterns: ['overall'] },
+  { key: 'staffRating',          patterns: ['staff'] },
+  { key: 'experienceRating',     patterns: ['experience'] },
+  { key: 'hygieneRating',        patterns: ['hygiene', 'clean'] },
+  { key: 'serviceQualityRating', patterns: ['quality', 'service quality'] },
+  { key: 'waitingRating',        patterns: ['wait', 'waiting', 'speed'] },
+]
+
+function matchFeedbackCategory(name: string): FeedbackCategorySlot | null {
+  const lower = name.toLowerCase()
+  for (const m of FEEDBACK_CATEGORY_MATCHERS) {
+    if (m.patterns.some(p => lower.includes(p))) return m.key
+  }
+  return null
 }
 
 /* ------------------------------------------------------------------ */
@@ -1462,7 +1771,6 @@ function StaffScheduleTab({
                   sm:flex-row sm:items-start sm:gap-4
                 "
               >
-                {/* Row 1 (mobile) / left side (desktop): day label + toggle */}
                 <div className="flex items-center gap-3 sm:gap-4 sm:flex-shrink-0">
                   <span className="w-14 sm:w-24 text-sm font-medium text-ink">
                     <span className="hidden sm:inline">{DAY_LABELS[row.dayOfWeek]}</span>
@@ -1485,7 +1793,6 @@ function StaffScheduleTab({
                   )}
                 </div>
 
-                {/* Row 2 (mobile) / right side (desktop): intervals */}
                 {!row.isClosed && (
                   <div className="flex flex-col gap-2 flex-1 min-w-0">
                     {intervals.map((iv, idx) => (
@@ -1710,7 +2017,6 @@ function StaffTimeOffTab({
       </div>
 
       <div className="bg-surface rounded-2xl border border-line p-4 sm:p-5 flex flex-col gap-4">
-        {/* Date */}
         <div className="min-w-0">
           <label className="text-xs font-medium text-ink-3 uppercase tracking-wider block mb-2">
             Date
@@ -1723,7 +2029,6 @@ function StaffTimeOffTab({
           />
         </div>
 
-        {/* All-day toggle */}
         <div className="flex items-center">
           <Toggle
             checked={allDay}
@@ -1732,7 +2037,6 @@ function StaffTimeOffTab({
           />
         </div>
 
-        {/* Times — only when not all-day. Start and End sit next to each other. */}
         {!allDay && (
           <div className="flex flex-wrap items-end gap-2 sm:gap-3">
             <div className="min-w-0">
@@ -2186,6 +2490,26 @@ function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' | 'lg'
   )
 }
 
+function MiniStars({ rating }: { rating: number }) {
+  return (
+    <div className="flex items-center gap-0.5 flex-shrink-0">
+      {[1, 2, 3, 4, 5].map(i => (
+        <svg
+          key={i}
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill={i <= Math.round(rating) ? '#C4A97D' : 'none'}
+          stroke="#C4A97D"
+          strokeWidth="1.5"
+        >
+          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+        </svg>
+      ))}
+    </div>
+  )
+}
+
 function LoadingState({ label }: { label: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -2202,6 +2526,14 @@ function LoadingState({ label }: { label: string }) {
 /* ------------------------------------------------------------------ */
 
 function normalizeArray<T>(res: unknown): T[] {
+  if (Array.isArray(res)) return res as T[]
+  const anyRes = res as any
+  if (Array.isArray(anyRes?.data?.data)) return anyRes.data.data as T[]
+  if (Array.isArray(anyRes?.data)) return anyRes.data as T[]
+  return []
+}
+
+function unwrapArray<T>(res: unknown): T[] {
   if (Array.isArray(res)) return res as T[]
   const anyRes = res as any
   if (Array.isArray(anyRes?.data?.data)) return anyRes.data.data as T[]

@@ -34,8 +34,28 @@ export const servicesApi = {
       query: q,
     }),
 
+  /**
+   * Public listing — no auth. Same shape/filters as `list`, but only
+   * publicly-visible services are returned.
+   */
+  listPublic: (
+    businessId: string,
+    q?: {
+      branchId?: string;
+      categoryId?: string;
+      status?: ServiceStatus;
+    },
+  ) =>
+    http.get<Service[]>(`/public/businesses/${businessId}/services`, {
+      query: q,
+    }),
+
   /** §9.3 — Bearer. 403 if not accessible, 404 if missing. */
   get: (serviceId: string) => http.get<Service>(`/services/${serviceId}`),
+
+  /** Public fetch — no auth. 404 if missing or not publicly visible. */
+  getPublic: (serviceId: string) =>
+    http.get<Service>(`/public/services/${serviceId}`),
 
   /** §9.4 — Bearer + Owner/Admin. All fields optional. */
   update: (serviceId: string, patch: UpdateServiceInput) =>

@@ -1,13 +1,12 @@
-// src/components/customers/CustomersPage.tsx
-
 import { useEffect, useMemo, useState } from 'react'
-import type { Customer } from '../../types/api'
-import type { Appointment, FeedbackItem } from '../../types'
+import type { Customer, FeedbackSubmission, FeedbackCategoryType } from '../../types/api'
+import type { Appointment } from '../../types'
 import { Button, Input, Textarea, Modal, Avatar } from '../ui'
 import { EmptyState } from '../services/ServicesPage'
 import { useToast } from '../ui/Toast'
 import { useBusiness } from '../../contexts/BusinessContext'
 import { customersApi } from '../../api/customers.api'
+import { feedbackApi } from '../../api/feedback.api'
 
 /* ------------------------------------------------------------------ */
 /*  Phone normalization                                                */
@@ -26,15 +25,41 @@ function normalizePhone(raw: string): string | null {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Feedback UI shape — flattened for this page                        */
+/* ------------------------------------------------------------------ */
+
+interface UiCustomerFeedback {
+  id: string
+  anonymous: boolean
+  serviceName: string
+  staffName: string
+  branchName: string
+  date: string
+  overallRating: number
+  staffRating: number
+  experienceRating: number
+  hygieneRating: number
+  serviceQualityRating: number
+  waitingRating: number
+  comment: string | null
+  extraResponses: Array<{
+    categoryName: string
+    type: FeedbackCategoryType
+    rating: number | null
+    text: string | null
+    boolean: boolean | null
+  }>
+}
+
+/* ------------------------------------------------------------------ */
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
 interface CustomersPageProps {
   appointments: Appointment[]
-  feedback: FeedbackItem[]
 }
 
-export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
+export function CustomersPage({ appointments }: CustomersPageProps) {
   const toast = useToast()
   const { activeBusinessId } = useBusiness()
 
@@ -45,6 +70,10 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
   const [selectedId,     setSelectedId]     = useState<string | null>(null)
   const [selectedDetail, setSelectedDetail] = useState<Customer | null>(null)
   const [detailLoading,  setDetailLoading]  = useState(false)
+
+  /* Feedback cache — fetched once per business, filtered per customer. */
+  const [feedbackAll, setFeedbackAll] = useState<FeedbackSubmission[]>([])
+  const [feedbackLoading, setFeedbackLoading] = useState(false)
 
   const [activeTab, setActiveTab] =
     useState<'overview' | 'appointments' | 'feedback' | 'notes'>('overview')
@@ -76,6 +105,35 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBusinessId, search])
+
+  /**
+   * Feedback is business-wide; load once when the business changes.
+   * The server has no `customer_id` filter on this endpoint, so we
+   * filter by `submission.customer.id` client-side.
+   */
+  useEffect(() => {
+    if (!activeBusinessId) {
+      setFeedbackAll([])
+      return
+    }
+    let cancelled = false
+    setFeedbackLoading(true)
+    ;(async () => {
+      try {
+        const res = await feedbackApi.list(activeBusinessId, { limit: 100 })
+        const subs = unwrapArray<FeedbackSubmission>(res)
+        if (!cancelled) setFeedbackAll(subs)
+      } catch (err) {
+        if (cancelled) return
+        console.warn('[customers] feedback load failed', err)
+        // Non-fatal — the tab just shows the empty state.
+      } finally {
+        if (!cancelled) setFeedbackLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBusinessId])
 
   async function loadDetail(id: string) {
     setDetailLoading(true)
@@ -131,8 +189,6 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
       void refresh()
     } catch (err) {
       console.error('[customers] create failed', err)
-      console.error('[customers] err.details', (err as any)?.details)
-      console.error('[customers] err.response?.data', (err as any)?.response?.data)
       toast.error(extractErrorMessage(err, 'Could not add the customer.'))
     }
   }
@@ -196,7 +252,13 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
     const custAppts = appointments
       .filter(a => a.customerId === selectedDetail.id)
       .sort((a, b) => b.date.localeCompare(a.date))
-    const custFb = feedback.filter(f => f.customerId === selectedDetail.id)
+
+    // Filter feedback submissions to those that carry this customer id.
+    // Anonymous submissions are skipped because the server nulls out
+    // `customer` for privacy.
+    const custFb: UiCustomerFeedback[] = feedbackAll
+      .filter(s => !s.isAnonymous && s.customer?.id === selectedDetail.id)
+      .map(normalizeForUi)
 
     const displayName = `${selectedDetail.firstName} ${selectedDetail.lastName}`.trim()
     const primaryPhone = primaryPhoneOf(selectedDetail)
@@ -348,29 +410,15 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
 
           {activeTab === 'feedback' && (
             <div className="max-w-2xl flex flex-col gap-3">
-              {custFb.length === 0 ? (
+              {feedbackLoading ? (
+                <p className="text-sm text-ink-3 py-10 text-center">Loading feedback…</p>
+              ) : custFb.length === 0 ? (
                 <p className="text-sm text-ink-3 py-10 text-center">
                   No feedback from this customer yet.
                 </p>
               ) : (
                 custFb.map(f => (
-                  <div key={f.id} className="bg-surface rounded-2xl border border-line p-5">
-                    <div className="flex items-center justify-between mb-2 gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <MiniStars rating={f.overallRating} />
-                        <span className="text-sm font-medium text-ink">
-                          {f.overallRating.toFixed(1)}
-                        </span>
-                      </div>
-                      <span className="text-xs text-ink-3 flex-shrink-0">{f.date}</span>
-                    </div>
-                    {f.comment && (
-                      <p className="text-sm text-ink-2 leading-relaxed">"{f.comment}"</p>
-                    )}
-                    <p className="text-xs text-ink-3 mt-2 truncate">
-                      {f.serviceName} · {f.staffName}
-                    </p>
-                  </div>
+                  <FeedbackCard key={f.id} item={f} />
                 ))
               )}
             </div>
@@ -566,6 +614,221 @@ export function CustomersPage({ appointments, feedback }: CustomersPageProps) {
       />
     </div>
   )
+}
+
+/* ------------------------------------------------------------------ */
+/*  FeedbackCard — one customer feedback entry                         */
+/* ------------------------------------------------------------------ */
+
+function FeedbackCard({ item }: { item: UiCustomerFeedback }) {
+  const ratings: Array<{ label: string; value: number }> = [
+    { label: 'Staff',      value: item.staffRating },
+    { label: 'Experience', value: item.experienceRating },
+    { label: 'Hygiene',    value: item.hygieneRating },
+    { label: 'Quality',    value: item.serviceQualityRating },
+    { label: 'Wait',       value: item.waitingRating },
+  ].filter(r => r.value > 0)
+
+  return (
+    <div className="bg-surface rounded-2xl border border-line p-5">
+      <div className="flex items-center justify-between mb-2 gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <MiniStars rating={item.overallRating} />
+          <span className="text-sm font-medium text-ink">
+            {item.overallRating.toFixed(1)}
+          </span>
+        </div>
+        <span className="text-xs text-ink-3 flex-shrink-0">{item.date}</span>
+      </div>
+
+      {item.comment && (
+        <p className="text-sm text-ink-2 leading-relaxed">"{item.comment}"</p>
+      )}
+
+      <p className="text-xs text-ink-3 mt-2 truncate">
+        {item.serviceName} · {item.staffName} · {item.branchName}
+      </p>
+
+      {ratings.length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-3 mt-3 pt-3 border-t border-line">
+          {ratings.map(r => (
+            <span key={r.label}>
+              {r.label}: <span className="text-ink-2 font-medium">{r.value}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {item.extraResponses.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-line flex flex-col gap-2">
+          {item.extraResponses.map((r, i) => (
+            <div key={i}>
+              <p className="text-[11px] font-medium text-ink-2 mb-0.5">
+                {r.categoryName}
+              </p>
+              {r.type === 'RATING' && r.rating != null && (
+                <div className="flex items-center gap-2">
+                  <MiniStars rating={r.rating} />
+                  <span className="text-xs text-ink">{r.rating}</span>
+                </div>
+              )}
+              {r.type === 'TEXT' && r.text && (
+                <p className="text-sm text-ink-2 leading-relaxed">"{r.text}"</p>
+              )}
+              {r.type === 'BOOLEAN' && r.boolean != null && (
+                <p className="text-sm text-ink-2">
+                  {r.boolean ? 'Yes' : 'No'}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  normalizeForUi — FeedbackSubmission → UiCustomerFeedback           */
+/* ------------------------------------------------------------------ */
+
+const CATEGORY_MATCHERS: Array<{
+  key: keyof Pick<
+    UiCustomerFeedback,
+    | 'overallRating'
+    | 'staffRating'
+    | 'experienceRating'
+    | 'hygieneRating'
+    | 'serviceQualityRating'
+    | 'waitingRating'
+  >
+  patterns: string[]
+}> = [
+  { key: 'overallRating',        patterns: ['overall'] },
+  { key: 'staffRating',          patterns: ['staff'] },
+  { key: 'experienceRating',     patterns: ['experience'] },
+  { key: 'hygieneRating',        patterns: ['hygiene', 'clean'] },
+  { key: 'serviceQualityRating', patterns: ['quality', 'service quality'] },
+  { key: 'waitingRating',        patterns: ['wait', 'waiting', 'speed'] },
+]
+
+function matchCategory(
+  name: string,
+):
+  | 'overallRating'
+  | 'staffRating'
+  | 'experienceRating'
+  | 'hygieneRating'
+  | 'serviceQualityRating'
+  | 'waitingRating'
+  | null {
+  const lower = name.toLowerCase()
+  for (const m of CATEGORY_MATCHERS) {
+    if (m.patterns.some(p => lower.includes(p))) return m.key
+  }
+  return null
+}
+
+function normalizeForUi(s: FeedbackSubmission): UiCustomerFeedback {
+  const serviceName = s.appointment?.service?.name ?? '—'
+  const branchName  = s.appointment?.branch?.name ?? '—'
+  const firstStaff  = s.appointment?.staff?.[0]
+  const staffName   = firstStaff
+    ? `${firstStaff.firstName} ${firstStaff.lastName}`.trim()
+    : '—'
+
+  const date = s.submittedAt
+    ? new Date(s.submittedAt).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : '—'
+
+  let overallRating = 0
+  let staffRating = 0
+  let experienceRating = 0
+  let hygieneRating = 0
+  let serviceQualityRating = 0
+  let waitingRating = 0
+
+  let comment: string | null = null
+  const extraResponses: UiCustomerFeedback['extraResponses'] = []
+
+  for (const r of s.responses) {
+    const name = r.category?.name ?? ''
+    const type = r.category?.type ?? 'RATING'
+
+    if (type === 'RATING' && r.ratingValue != null) {
+      const slot = matchCategory(name)
+      if (slot === 'overallRating') overallRating = r.ratingValue
+      else if (slot === 'staffRating') staffRating = r.ratingValue
+      else if (slot === 'experienceRating') experienceRating = r.ratingValue
+      else if (slot === 'hygieneRating') hygieneRating = r.ratingValue
+      else if (slot === 'serviceQualityRating') serviceQualityRating = r.ratingValue
+      else if (slot === 'waitingRating') waitingRating = r.ratingValue
+      else {
+        extraResponses.push({
+          categoryName: name,
+          type,
+          rating: r.ratingValue,
+          text: null,
+          boolean: null,
+        })
+      }
+    } else if (type === 'TEXT' && r.textResponse) {
+      if (!comment) comment = r.textResponse
+      else {
+        extraResponses.push({
+          categoryName: name,
+          type,
+          rating: null,
+          text: r.textResponse,
+          boolean: null,
+        })
+      }
+    } else if (type === 'BOOLEAN' && r.booleanResponse != null) {
+      extraResponses.push({
+        categoryName: name,
+        type,
+        rating: null,
+        text: null,
+        boolean: r.booleanResponse,
+      })
+    }
+  }
+
+  if (overallRating === 0) {
+    const numeric = [
+      staffRating,
+      experienceRating,
+      hygieneRating,
+      serviceQualityRating,
+      waitingRating,
+    ].filter(v => v > 0)
+    if (numeric.length > 0) {
+      overallRating = Math.round(
+        numeric.reduce((s, v) => s + v, 0) / numeric.length,
+      )
+    }
+  }
+
+  return {
+    id: s.id,
+    anonymous: s.isAnonymous,
+    serviceName,
+    staffName,
+    branchName,
+    date,
+    overallRating,
+    staffRating,
+    experienceRating,
+    hygieneRating,
+    serviceQualityRating,
+    waitingRating,
+    comment,
+    extraResponses,
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -846,7 +1109,17 @@ function PersonIcon() {
 
 function normalizeArray<T>(res: unknown): T[] {
   if (Array.isArray(res)) return res as T[]
-  if (Array.isArray((res as any)?.data)) return (res as any).data as T[]
+  const anyRes = res as any
+  if (Array.isArray(anyRes?.data?.data)) return anyRes.data.data as T[]
+  if (Array.isArray(anyRes?.data)) return anyRes.data as T[]
+  return []
+}
+
+function unwrapArray<T>(res: unknown): T[] {
+  if (Array.isArray(res)) return res as T[]
+  const anyRes = res as any
+  if (Array.isArray(anyRes?.data?.data)) return anyRes.data.data as T[]
+  if (Array.isArray(anyRes?.data)) return anyRes.data as T[]
   return []
 }
 

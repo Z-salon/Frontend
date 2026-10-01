@@ -134,56 +134,85 @@ export interface BusinessConfig {
 }
 
 export interface BrandingPayload {
-  logoUrl: string | null;
-  coverImageUrl: string | null;
-  primaryColor: string | null;
-  secondaryColor: string | null;
-  description: string | null;
-  aboutUs: string | null;
-  website: string | null;
-  facebookUrl: string | null;
-  instagramUrl: string | null;
-  telegramUrl: string | null;
-  tiktokUrl: string | null;
+  /**
+   * The server returns these as nested `{ url, publicId }` objects
+   * (§3.3). Null when the business hasn't uploaded one.
+   */
+  id: string
+  name: string
+  slug: string
+  currency: string
+  timezone: string
+
+  logo: { url: string; publicId: string } | null
+  cover: { url: string; publicId: string } | null
+
+  /**
+   * @deprecated — the flat shape was an artifact of an older Swagger
+   * spec. Prefer `logo?.url` / `cover?.url`. Kept optional so
+   * mid-migration code still type-checks.
+   */
+  logoUrl?: string | null
+  /** @deprecated — use `cover?.url` */
+  coverImageUrl?: string | null
+
+  primaryColor: string | null
+  secondaryColor: string | null
+  description: string | null
+  aboutUs: string | null
+  website: string | null
+  facebookUrl: string | null
+  instagramUrl: string | null
+  telegramUrl: string | null
+  tiktokUrl: string | null
+
   branches: Array<{
-    id: string;
-    name: string;
-    address: string | null;
-    email: string | null;
-    timezone: string;
-    phones: BranchPhone[];
-  }>;
+    id: string
+    name: string
+    address: string | null
+    email: string | null
+    timezone: string
+    phones: BranchPhone[]
+  }>
+
   serviceCategories: Array<{
-    id: string;
-    name: string;
-    description: string | null;
+    id: string
+    name: string
+    description: string | null
     sampleWorks: Array<{
-      id: string;
-      url: string;
-      name: string;
-      description: string | null;
-      serviceCategoryId: string;
-    }>;
-  }>;
+      id: string
+      url: string
+      /** §8.6 — always returned by the server. */
+      publicId: string
+      name: string
+      description: string | null
+      serviceCategoryId: string
+    }>
+  }>
 }
 
 /**
  * Fields accepted by PATCH /businesses/{id}/branding (§3.4).
- * Do NOT include address/phone/email — strict schema rejects them (§11.2).
+ *
+ * The body is `.strict()`: sending unknown fields (e.g. `address`,
+ * `phone`, `email`) returns 400. `logo` and `cover` are nested
+ * `{ url, publicId }` objects — the same shape the server returns
+ * from the GET. Pass `null` to clear an image; the backend deletes
+ * the old Cloudinary asset.
  */
 export type BrandingUpdateInput = Partial<{
-  logoUrl: string | null;
-  coverImageUrl: string | null;
-  primaryColor: string | null;
-  secondaryColor: string | null;
-  description: string | null;
-  aboutUs: string | null;
-  website: string | null;
-  facebookUrl: string | null;
-  instagramUrl: string | null;
-  telegramUrl: string | null;
-  tiktokUrl: string | null;
-}>;
+  logo: { url: string; publicId: string } | null
+  cover: { url: string; publicId: string } | null
+  primaryColor: string | null
+  secondaryColor: string | null
+  description: string | null
+  aboutUs: string | null
+  website: string | null
+  facebookUrl: string | null
+  instagramUrl: string | null
+  telegramUrl: string | null
+  tiktokUrl: string | null
+}>
 
 // ============================================================
 // §4 Payment Methods
@@ -758,4 +787,178 @@ export interface AppointmentPayment {
   notes: string | null;
   recordedById: string;
   paidAt: string;
+}
+
+// ------------------------------------------------------------------
+//  §12 Feedback
+// ------------------------------------------------------------------
+
+export type FeedbackCategoryType = 'RATING' | 'TEXT' | 'BOOLEAN'
+
+export type FeedbackRequestStatus = 'PENDING' | 'SUBMITTED' | 'EXPIRED'
+
+/**
+ * A feedback category as exposed on the customer-facing form
+ * (`GET /feedback/{token}`).
+ *
+ * Snake-case field names here are intentional — the server returns
+ * the form payload with snake_case keys (§12.2 example).
+ */
+export interface FeedbackFormCategory {
+  id: string
+  name: string
+  description: string | null
+  type: FeedbackCategoryType
+  rating_scale_min: number | null
+  rating_scale_max: number | null
+  sort_order: number
+}
+
+export interface FeedbackFormBusiness {
+  id: string
+  name: string
+}
+
+/**
+ * `GET /feedback/{token}` — the public feedback form. Only enabled
+ * categories are returned. No customer identity is exposed.
+ */
+export interface FeedbackFormResponse {
+  request_id: string
+  /** ISO 8601. The request expires 7 days after creation. */
+  expires_at: string
+  business: FeedbackFormBusiness
+  categories: FeedbackFormCategory[]
+}
+
+/**
+ * `POST /feedback/submit` input.
+ *
+ * Each response targets a single category. The `category_id` must
+ * belong to the business and be enabled; the value field must match
+ * the category `type`:
+ *   RATING  → rating_value   (within [rating_scale_min, rating_scale_max])
+ *   TEXT    → text_response
+ *   BOOLEAN → boolean_response
+ */
+export type FeedbackResponseInput =
+  | { category_id: string; rating_value: number }
+  | { category_id: string; text_response: string }
+  | { category_id: string; boolean_response: boolean }
+
+export interface FeedbackSubmitInput {
+  token: string
+  is_anonymous: boolean
+  responses: FeedbackResponseInput[]
+}
+
+/** `POST /feedback/submit` response (201). */
+export interface FeedbackSubmitResponse {
+  submission_id: string
+  is_anonymous: boolean
+  submitted_at: string
+}
+
+/* ------------------------------------------------------------------ */
+/*  Admin-side shapes                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A feedback category as returned by the admin list endpoint
+ * (`GET /businesses/{id}/feedback-categories`).
+ *
+ * NOTE: unlike the form payload, admin endpoints return camelCase
+ * field names (matching the rest of the admin API).
+ */
+export interface FeedbackCategory {
+  id: string
+  businessId: string
+  name: string
+  description: string | null
+  type: FeedbackCategoryType
+  ratingScaleMin: number | null
+  ratingScaleMax: number | null
+  sortOrder: number
+  isEnabled: boolean
+  /** Number of responses received for this category. */
+  responseCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FeedbackCategoryInput {
+  name: string
+  type: FeedbackCategoryType
+  description?: string
+  ratingScaleMin?: number | null
+  ratingScaleMax?: number | null
+  sortOrder?: number
+}
+
+export interface FeedbackCategoryUpdateInput {
+  name?: string
+  description?: string | null
+  ratingScaleMin?: number | null
+  ratingScaleMax?: number | null
+  sortOrder?: number
+  isEnabled?: boolean
+}
+
+/**
+ * A single admin-side feedback submission.
+ *
+ * Privacy contract (§12.4): when `isAnonymous` is `true`, both
+ * `customer` and `appointment` are `null` server-side — no
+ * identifying context leaks.
+ */
+export interface FeedbackSubmission {
+  id: string
+  isAnonymous: boolean
+  submittedAt: string
+  customer: FeedbackSubmissionCustomer | null
+  appointment: FeedbackSubmissionAppointment | null
+  responses: FeedbackSubmissionResponse[]
+}
+
+export interface FeedbackSubmissionCustomer {
+  id: string
+  firstName: string
+  lastName: string
+  phone: string | null
+}
+
+export interface FeedbackSubmissionAppointment {
+  id: string
+  scheduledStart: string
+  scheduledEnd: string
+  status: AppointmentStatus
+  branch: { id: string; name: string } | null
+  service: { id: string; name: string } | null
+  staff: Array<{ id: string; firstName: string; lastName: string }>
+}
+
+export interface FeedbackSubmissionResponse {
+  id: string
+  categoryId: string
+  category: { id: string; name: string; type: FeedbackCategoryType }
+  ratingValue: number | null
+  textResponse: string | null
+  booleanResponse: boolean | null
+}
+
+/* ------------------------------------------------------------------ */
+/*  Admin list query                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface FeedbackListQuery {
+  page?: number
+  /** ≤ 100. */
+  limit?: number
+  /** ISO datetime — filtered on `submitted_at`. */
+  from_date?: string
+  /** ISO datetime — filtered on `submitted_at`. */
+  to_date?: string
+  branch_id?: string
+  category_id?: string
+  is_anonymous?: boolean
 }

@@ -33,6 +33,32 @@ type SettingsSection =
   | 'notifications'
   | 'account'
 
+/* ------------------------------------------------------------------ */
+/*  Public page URL helper                                             */
+/*                                                                     */
+/*  Builds the URL a customer would visit to see this business's       */
+/*  storefront. In dev, it uses the same origin as the admin app       */
+/*  (the customer app is served at /book/* by Vite's fallback).        */
+/*  In production, set VITE_PUBLIC_BOOK_URL (e.g. book.zsalon.com)     */
+/*  so the link points at the deployed customer app.                   */
+/* ------------------------------------------------------------------ */
+
+function publicBookUrl(businessId: string): string {
+  const envBase = (import.meta as any).env?.VITE_PUBLIC_BOOK_URL as
+    | string
+    | undefined
+
+  if (envBase) {
+    const trimmed = envBase.replace(/\/$/, '')
+    return `${trimmed}/book/${businessId}`
+  }
+
+  // Dev / same-origin fallback.
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin : ''
+  return `${origin}/book/${businessId}`
+}
+
 export function SettingsPage({
   settings, expenseCategories, paymentMethods,
   onUpdateSettings, onUpdateCategories, onUpdatePaymentMethods, onLogout,
@@ -255,6 +281,11 @@ function BusinessSettings({
           <p className="text-xs text-ink-3">Loading…</p>
         )}
 
+        {/* Public page link — visible here too so owners can find it easily */}
+        {businessId && (
+          <PublicPageLink businessId={businessId} />
+        )}
+
         <Field label="Salon name" value={name} onChange={setName} />
 
         <div>
@@ -310,6 +341,87 @@ function BusinessSettings({
         />
       </div>
     </Section>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  PublicPageLink — shows the customer-facing URL + open + copy       */
+/* ------------------------------------------------------------------ */
+
+function PublicPageLink({ businessId }: { businessId: string }) {
+  const url = publicBookUrl(businessId)
+  const [copied, setCopied] = useState(false)
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {
+      // Clipboard API can fail on insecure origins; ignore silently.
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-line bg-surface px-4 py-3.5 flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider">
+          Public page
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 min-w-0">
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="
+            flex-1 min-w-0 truncate
+            text-sm text-ink-2 underline underline-offset-2
+            hover:text-ink transition-colors
+          "
+          title={url}
+        >
+          {url}
+        </a>
+
+        <button
+          type="button"
+          onClick={copy}
+          className="
+            h-8 px-2.5 rounded-lg text-xs flex-shrink-0
+            border border-line text-ink-2
+            hover:border-warm hover:bg-warm-subtle transition-colors
+          "
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="
+            h-8 px-3 rounded-lg text-xs flex-shrink-0 font-medium
+            inline-flex items-center gap-1.5
+            bg-ink text-surface hover:bg-ink/90 transition-colors
+          "
+        >
+          Open
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" y1="14" x2="21" y2="3" />
+          </svg>
+        </a>
+      </div>
+
+      <p className="text-[11px] text-ink-3 leading-relaxed">
+        Share this link with customers. They'll see your branding, branches,
+        and can book an appointment.
+      </p>
+    </div>
   )
 }
 
@@ -406,6 +518,9 @@ function BrandingSettings({
     <Section title="Branding" description="Manage your salon's visual identity.">
       <div className="max-w-md flex flex-col gap-6">
         {loading && <p className="text-xs text-ink-3">Loading…</p>}
+
+        {/* Public page link — prominent placement in the Branding tab */}
+        {businessId && <PublicPageLink businessId={businessId} />}
 
         <div>
           <label className="text-xs font-semibold text-ink-3 mb-3 block">
@@ -527,12 +642,6 @@ function BrandingSettings({
 
 /* ------------------------------------------------------------------ */
 /*  Section: Booking — live via bookingConfigApi (§7)                  */
-/*                                                                     */
-/*  Booking config is PER-BRANCH. This tab uses the app-wide branch    */
-/*  context for the branch list and the currently active branch.       */
-/*  The body sent on save uses the nested `booking` / `cancellation` / */
-/*  `confirmation` groups (§7.2) — a flat body is rejected by the      */
-/*  strict schema.                                                     */
 /* ------------------------------------------------------------------ */
 
 const REFUND_POLICY_OPTIONS = [
@@ -556,7 +665,6 @@ function BookingSettings() {
     loading: loadingBranches,
   } = useBranch()
 
-  // Fall back to the first branch if the context hasn't picked one yet.
   const branchId = useMemo(
     () => activeBranchId === 'all'
       ? (branches[0]?.id ?? null)
@@ -572,7 +680,6 @@ function BookingSettings() {
   const [saved, setSaved]                 = useState(false)
   const [error, setError]                 = useState<string | null>(null)
 
-  /* -------- Load config when branch changes -------- */
   useEffect(() => {
     if (!activeBusinessId || !branchId) {
       setConfig(null)
@@ -671,7 +778,6 @@ function BookingSettings() {
       description="Configure how customers book appointments at each branch."
     >
       <div className="flex flex-col gap-6 max-w-2xl">
-        {/* Branch picker — driven by the shared branch context */}
         <div>
           <label className="text-xs font-semibold text-ink-3 mb-2 block">
             Branch
@@ -723,11 +829,7 @@ function BookingSettings() {
           </p>
         ) : (
           <>
-            {/* ───────────── Booking ───────────── */}
-            <SubSection
-              title="Booking"
-              subtitle="How customers can book and how far ahead."
-            >
+            <SubSection title="Booking" subtitle="How customers can book and how far ahead.">
               <ToggleRow
                 label="Online booking enabled"
                 description="Allow customers to book through the storefront."
@@ -773,11 +875,7 @@ function BookingSettings() {
               />
             </SubSection>
 
-            {/* ───────────── Cancellation ───────────── */}
-            <SubSection
-              title="Cancellation"
-              subtitle="When customers can cancel and what they get back."
-            >
+            <SubSection title="Cancellation" subtitle="When customers can cancel and what they get back.">
               <ToggleRow
                 label="Customer cancellation enabled"
                 description="Allow customers to cancel their own appointments."
@@ -832,11 +930,7 @@ function BookingSettings() {
               />
             </SubSection>
 
-            {/* ───────────── Confirmation ───────────── */}
-            <SubSection
-              title="Confirmation"
-              subtitle="How and when customers confirm their appointment."
-            >
+            <SubSection title="Confirmation" subtitle="How and when customers confirm their appointment.">
               <ToggleRow
                 label="Customer confirmation enabled"
                 description="Ask customers to confirm they'll attend."
@@ -1216,20 +1310,6 @@ function TextArea({ label, value, onChange, rows = 3 }: {
   )
 }
 
-function NumField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
-  return (
-    <div>
-      <label className="text-xs font-semibold text-ink-3 mb-1.5 block">{label}</label>
-      <input
-        type="number"
-        value={value}
-        onChange={e => onChange(parseInt(e.target.value) || 0)}
-        className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg text-ink focus:outline-none focus:border-warm"
-      />
-    </div>
-  )
-}
-
 function NumFieldRow({
   label,
   value,
@@ -1358,14 +1438,6 @@ function readLogoUrl(branding: BrandingPayload | null): string | null {
     logo?: { url?: string | null } | null
   }
   return b.logo?.url ?? b.logoUrl ?? null
-}
-
-function unwrapArray<T>(res: unknown): T[] {
-  if (Array.isArray(res)) return res as T[]
-  const anyRes = res as any
-  if (Array.isArray(anyRes?.data?.data)) return anyRes.data.data as T[]
-  if (Array.isArray(anyRes?.data)) return anyRes.data as T[]
-  return []
 }
 
 function extractErrorMessage(err: unknown, fallback = 'Something went wrong.'): string {

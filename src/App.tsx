@@ -428,11 +428,9 @@ export default function App() {
       case "dashboard":
         return (
           <DashboardPage
-            // Adapter — legacy DashboardPage still consumes the mock
-            // Appointment shape. Delete once migrated.
             appointments={appointments.map(toMockAppt)}
             customers={customers as any}
-            feedback={feedback}
+            // feedback={feedback}   ← delete this line
             transactions={transactions}
             branches={branches as any}
             onNavigate={navigateTo}
@@ -551,19 +549,11 @@ export default function App() {
         return (
           <CustomersPage
             appointments={appointments.map(toMockAppt)}
-            feedback={feedback}
           />
         )
 
       case "feedback":
-        return (
-          <FeedbackPage
-            feedback={feedback}
-            staff={staffList as any}
-            branches={branches as any}
-            onUpdate={setFeedback}
-          />
-        )
+        return <FeedbackPage />
 
       case "finance":
         return (
@@ -602,7 +592,7 @@ export default function App() {
   const lockedBranchId = activeBranchFilter ?? undefined
 
   return (
-    <AppShell activeSection={navSection} onNavigate={setNavSection}>
+    <AppShell activeSection={navSection} onNavigate={setNavSection} onLogout={() => void logout()}>
       {renderSection()}
 
       <NewBookingModal

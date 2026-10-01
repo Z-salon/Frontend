@@ -1,5 +1,3 @@
-// src/components/branches/BranchesPage.tsx
-
 import { useEffect, useMemo, useState } from 'react'
 import type {
   Branch,

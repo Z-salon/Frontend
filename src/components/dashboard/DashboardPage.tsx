@@ -4,23 +4,24 @@ import { useEffect, useMemo, useState } from 'react'
 import type {
   Appointment as ApiAppointment,
   BusinessConfig,
+  FeedbackSubmission,
+  FeedbackCategoryType,
 } from '../../types/api'
 import type {
   Appointment,
   Customer,
-  FeedbackItem,
   Transaction,
   Branch,
 } from '../../types'
 import { businessApi } from '../../api/business.api'
 import { appointmentsApi } from '../../api/appointments.api'
+import { feedbackApi } from '../../api/feedback.api'
 import { useBusiness } from '../../contexts/BusinessContext'
 import { useBranch, ALL_BRANCHES } from '../../contexts/BranchContext'
 
 interface DashboardPageProps {
   appointments: Appointment[]
   customers: Customer[]
-  feedback: FeedbackItem[]
   transactions: Transaction[]
   branches: Branch[]
   onNavigate: (section: string) => void
@@ -29,8 +30,25 @@ interface DashboardPageProps {
   onAddExpense: () => void
 }
 
+/* ------------------------------------------------------------------ */
+/*  UI feedback shape — flattened from FeedbackSubmission              */
+/* ------------------------------------------------------------------ */
+
+interface UiFeedback {
+  id: string
+  anonymous: boolean
+  customerName: string | null
+  serviceName: string
+  branchId: string
+  branchName: string
+  date: string
+  submittedAtMs: number
+  overallRating: number
+  comment: string | null
+}
+
 export function DashboardPage({
-  appointments, customers, feedback, transactions, branches: branchesProp,
+  appointments, customers, transactions, branches: branchesProp,
   onNavigate, onNewBooking, onWalkIn, onAddExpense,
 }: DashboardPageProps) {
   const { activeBusinessId } = useBusiness()
@@ -38,7 +56,6 @@ export function DashboardPage({
     branches: branchesCtx,
     activeBranchId,
     activeBranchFilter,
-    loading: branchesLoading,
   } = useBranch()
 
   /* ------------------------------------------------------------------ */
@@ -72,9 +89,6 @@ export function DashboardPage({
 
   /* ------------------------------------------------------------------ */
   /*  Live appointments for TODAY from the API.                          */
-  /*                                                                     */
-  /*  Filtered by the ACTIVE BRANCH when the user has picked one.        */
-  /*  When the filter is "all", the whole business is queried.           */
   /* ------------------------------------------------------------------ */
 
   const todayStr = useMemo(
@@ -114,12 +128,58 @@ export function DashboardPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBusinessId, activeBranchFilter])
 
-  /**
-   * Normalize a server appointment into the UI's `Appointment` shape.
-   * Time fields (`startTime`, `endTime`) are normalized to **12-hour
-   * AM/PM strings** (e.g. `9:00 AM`) so the dashboard renders them
-   * consistently without any 24-hour values leaking through.
-   */
+  /* ------------------------------------------------------------------ */
+  /*  Live feedback from the API.                                        */
+  /*                                                                     */
+  /*  Loaded once per business. The dashboard shows the most recent 3    */
+  /*  reviews and the average overall rating. When a branch is active,   */
+  /*  we filter by the submission's appointment branch — anonymous       */
+  /*  submissions are dropped from the branch view because the server    */
+  /*  nulls their appointment reference (§12.4 privacy contract).        */
+  /* ------------------------------------------------------------------ */
+
+  const [feedbackAll, setFeedbackAll] = useState<FeedbackSubmission[]>([])
+  const [feedbackLoading, setFeedbackLoading] = useState(false)
+
+  useEffect(() => {
+    if (!activeBusinessId) {
+      setFeedbackAll([])
+      return
+    }
+    let cancelled = false
+    setFeedbackLoading(true)
+    ;(async () => {
+      try {
+        const res = await feedbackApi.list(activeBusinessId, { limit: 100 })
+        const subs = unwrapArray<FeedbackSubmission>(res)
+        if (!cancelled) setFeedbackAll(subs)
+      } catch (err) {
+        if (cancelled) return
+        console.warn('[dashboard] feedbackApi.list failed', err)
+        if (!cancelled) setFeedbackAll([])
+      } finally {
+        if (!cancelled) setFeedbackLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBusinessId])
+
+  const uiFeedback = useMemo<UiFeedback[]>(
+    () => feedbackAll.map(normalizeFeedback),
+    [feedbackAll],
+  )
+
+  /** Feedback scoped to the active branch (or all when filter is off). */
+  const feedbackScoped = useMemo(() => {
+    if (activeBranchFilter == null) return uiFeedback
+    return uiFeedback.filter(f => f.branchId === activeBranchFilter)
+  }, [uiFeedback, activeBranchFilter])
+
+  /* ------------------------------------------------------------------ */
+  /*  Normalize an appointment for the UI                                */
+  /* ------------------------------------------------------------------ */
+
   function normalizeForUi(a: ApiAppointment): Appointment {
     const start = new Date(a.scheduledStart)
     const end = new Date(a.scheduledEnd)
@@ -170,7 +230,6 @@ export function DashboardPage({
       date: localDate,
       startTime: to12h(startHHmm),
       endTime: to12h(endHHmm),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ...({ startTime24: startHHmm } as any),
       duration,
       price: Number(a.totalAmount) || 0,
@@ -180,13 +239,6 @@ export function DashboardPage({
     } as Appointment
   }
 
-  /**
-   * `todayAppts` prefers the live API list; falls back to the prop.
-   *
-   * When the branch context is filtering by a specific branch, the
-   * prop-based fallback is also filtered by that branch id, so both
-   * the live and fallback paths respect the active filter.
-   */
   const todayAppts = useMemo<Appointment[]>(() => {
     const source: Appointment[] = Array.isArray(liveToday)
       ? liveToday.map(normalizeForUi)
@@ -207,9 +259,6 @@ export function DashboardPage({
 
   /* ------------------------------------------------------------------ */
   /*  Derived metrics                                                    */
-  /*                                                                     */
-  /*  Transactions, customers, and feedback are all prop-fed, so when    */
-  /*  a branch is active we filter them locally to match.                */
   /* ------------------------------------------------------------------ */
 
   const filteredTransactions = useMemo(
@@ -220,17 +269,6 @@ export function DashboardPage({
     [transactions, activeBranchFilter],
   )
 
-  const filteredAppointments = useMemo(
-    () =>
-      activeBranchFilter == null
-        ? appointments
-        : appointments.filter(a => a.branchId === activeBranchFilter),
-    [appointments, activeBranchFilter],
-  )
-
-  // Customers are business-wide; we don't have a branchId on them, so
-  // they're not filtered. Debtors are derived from customer records
-  // which are already scoped by the API layer for non-admin roles.
   const todayRevenue = filteredTransactions
     .filter(t => t.type === 'revenue' && t.date === todayStr)
     .reduce((s, t) => s + (t.amountPaid ?? t.amount), 0)
@@ -240,8 +278,12 @@ export function DashboardPage({
     0,
   )
 
-  const avgRating = feedback.length
-    ? (feedback.reduce((s, f) => s + f.overallRating, 0) / feedback.length).toFixed(1)
+  /* Average rating over the scoped feedback set. */
+  const avgRating = feedbackScoped.length
+    ? (
+        feedbackScoped.reduce((s, f) => s + f.overallRating, 0) /
+        feedbackScoped.length
+      ).toFixed(1)
     : '—'
 
   const debtors = customers.filter(c => (c.outstandingBalance ?? 0) > 0)
@@ -261,15 +303,19 @@ export function DashboardPage({
   }
   const chartMax = Math.max(...chartDays.map(d => d.value), 1)
 
-  const recentFeedback = [...feedback]
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 3)
+  /* Recent feedback — most recent 3 from the scoped set. */
+  const recentFeedback = useMemo(
+    () =>
+      [...feedbackScoped]
+        .sort((a, b) => b.submittedAtMs - a.submittedAtMs)
+        .slice(0, 3),
+    [feedbackScoped],
+  )
 
   const hour = new Date().getHours()
   const greeting =
     hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 
-  /* Active-branch display name for the header subtitle. */
   const activeBranchName =
     activeBranchId === ALL_BRANCHES
       ? null
@@ -317,7 +363,7 @@ export function DashboardPage({
             {
               label: 'Average rating',
               value: `${avgRating} ★`,
-              sub: `${feedback.length} reviews`,
+              sub: `${feedbackScoped.length} review${feedbackScoped.length !== 1 ? 's' : ''}`,
             },
           ].map(m => (
             <div
@@ -473,7 +519,7 @@ export function DashboardPage({
               </div>
             </div>
 
-            {/* Branch overview — only when viewing "all" and there are 2+ branches */}
+            {/* Branch overview */}
             {branches.length > 1 && activeBranchId === ALL_BRANCHES && (
               <div className="bg-surface rounded-2xl border border-line overflow-hidden">
                 <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-line">
@@ -513,7 +559,7 @@ export function DashboardPage({
 
           {/* Right column */}
           <div className="flex flex-col gap-5 sm:gap-6 min-w-0">
-            {/* Recent feedback */}
+            {/* Recent feedback — live */}
             <div className="bg-surface rounded-2xl border border-line overflow-hidden">
               <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 sm:py-4 border-b border-line gap-3">
                 <div className="min-w-0">
@@ -530,7 +576,11 @@ export function DashboardPage({
                 </button>
               </div>
               <div className="divide-y divide-line">
-                {recentFeedback.length === 0 ? (
+                {feedbackLoading && feedbackAll.length === 0 ? (
+                  <p className="px-5 py-6 text-sm text-ink-3 text-center">
+                    Loading…
+                  </p>
+                ) : recentFeedback.length === 0 ? (
                   <p className="px-5 py-6 text-sm text-ink-3 text-center">
                     No feedback yet.
                   </p>
@@ -558,7 +608,8 @@ export function DashboardPage({
                         </p>
                       )}
                       <p className="text-[10px] text-ink-3 truncate">
-                        {f.anonymous ? 'Anonymous' : f.customerName} ·{' '}
+                        {f.anonymous ? 'Anonymous' : f.customerName ?? 'Anonymous'}
+                        {' · '}
                         {f.serviceName}
                       </p>
                     </div>
@@ -607,6 +658,118 @@ export function DashboardPage({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Feedback normalization                                             */
+/* ------------------------------------------------------------------ */
+
+const CATEGORY_MATCHERS: Array<{
+  key:
+    | 'overallRating'
+    | 'staffRating'
+    | 'experienceRating'
+    | 'hygieneRating'
+    | 'serviceQualityRating'
+    | 'waitingRating'
+  patterns: string[]
+}> = [
+  { key: 'overallRating',        patterns: ['overall'] },
+  { key: 'staffRating',          patterns: ['staff'] },
+  { key: 'experienceRating',     patterns: ['experience'] },
+  { key: 'hygieneRating',        patterns: ['hygiene', 'clean'] },
+  { key: 'serviceQualityRating', patterns: ['quality', 'service quality'] },
+  { key: 'waitingRating',        patterns: ['wait', 'waiting', 'speed'] },
+]
+
+function matchCategory(
+  name: string,
+):
+  | 'overallRating'
+  | 'staffRating'
+  | 'experienceRating'
+  | 'hygieneRating'
+  | 'serviceQualityRating'
+  | 'waitingRating'
+  | null {
+  const lower = name.toLowerCase()
+  for (const m of CATEGORY_MATCHERS) {
+    if (m.patterns.some(p => lower.includes(p))) return m.key
+  }
+  return null
+}
+
+function normalizeFeedback(s: FeedbackSubmission): UiFeedback {
+  const serviceName = s.appointment?.service?.name ?? '—'
+  const branchId    = s.appointment?.branch?.id ?? ''
+  const branchName  = s.appointment?.branch?.name ?? '—'
+
+  const submittedAt = new Date(s.submittedAt)
+  const submittedAtMs = Number.isFinite(submittedAt.getTime())
+    ? submittedAt.getTime()
+    : 0
+
+  const date = submittedAtMs
+    ? submittedAt.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+      })
+    : '—'
+
+  let overallRating = 0
+  let staffRating = 0
+  let experienceRating = 0
+  let hygieneRating = 0
+  let serviceQualityRating = 0
+  let waitingRating = 0
+  let comment: string | null = null
+
+  for (const r of s.responses) {
+    const name = r.category?.name ?? ''
+    const type: FeedbackCategoryType = r.category?.type ?? 'RATING'
+
+    if (type === 'RATING' && r.ratingValue != null) {
+      const slot = matchCategory(name)
+      if (slot === 'overallRating') overallRating = r.ratingValue
+      else if (slot === 'staffRating') staffRating = r.ratingValue
+      else if (slot === 'experienceRating') experienceRating = r.ratingValue
+      else if (slot === 'hygieneRating') hygieneRating = r.ratingValue
+      else if (slot === 'serviceQualityRating') serviceQualityRating = r.ratingValue
+      else if (slot === 'waitingRating') waitingRating = r.ratingValue
+    } else if (type === 'TEXT' && r.textResponse && !comment) {
+      comment = r.textResponse
+    }
+  }
+
+  if (overallRating === 0) {
+    const numeric = [
+      staffRating,
+      experienceRating,
+      hygieneRating,
+      serviceQualityRating,
+      waitingRating,
+    ].filter(v => v > 0)
+    if (numeric.length > 0) {
+      overallRating = Math.round(
+        numeric.reduce((sum, v) => sum + v, 0) / numeric.length,
+      )
+    }
+  }
+
+  return {
+    id: s.id,
+    anonymous: s.isAnonymous,
+    customerName: s.customer
+      ? `${s.customer.firstName} ${s.customer.lastName}`.trim()
+      : null,
+    serviceName,
+    branchId,
+    branchName,
+    date,
+    submittedAtMs,
+    overallRating,
+    comment,
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Status pill                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -633,34 +796,22 @@ function StatusPill({ status }: { status: string }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Time helpers — everything the UI displays is 12-hour AM/PM.        */
+/*  Time helpers                                                       */
 /* ------------------------------------------------------------------ */
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
 
-/** Format a Date as `YYYY-MM-DD` using **local** calendar fields. */
 function toLocalISODate(d: Date): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
 }
 
-/** Extract `HH:mm` (24-hour) from a Date. */
 function hhmmFromDate(d: Date): string {
   if (Number.isNaN(d.getTime())) return ''
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 }
 
-/** Extract `HH:mm` (24-hour) from an ISO datetime string. */
-function isoTimeFromIso(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  return hhmmFromDate(d)
-}
-
-/**
- * Convert a 24-hour `HH:mm` string to a 12-hour `h:mm AM/PM` string.
- */
 function to12h(hhmm: string): string {
   const m = hhmm.match(/^(\d{1,2}):(\d{2})$/)
   if (!m) return hhmm
@@ -672,10 +823,6 @@ function to12h(hhmm: string): string {
   return `${h}:${min} ${suffix}`
 }
 
-/**
- * Best-effort parse of a 12-hour or 24-hour string back to a 24-hour
- * `HH:mm` for sorting when the `startTime24` companion field is missing.
- */
 function parse12h(value: string): string {
   if (!value) return '00:00'
   const v = value.trim()
@@ -695,16 +842,10 @@ function parse12h(value: string): string {
   return `${pad2(h)}:${min}`
 }
 
-/**
- * Map API `AppointmentStatus` (§12) to the UI's lowercase slug form.
- */
 function toUiStatus(s: ApiAppointment['status']): string {
   return s.toLowerCase().replace('_', '-')
 }
 
-/**
- * Unwrap an array from any of the shapes the API returns.
- */
 function unwrapArray<T>(res: unknown): T[] {
   if (Array.isArray(res)) return res as T[]
   const anyRes = res as any
@@ -713,6 +854,6 @@ function unwrapArray<T>(res: unknown): T[] {
   return []
 }
 
-function fmt(n: number) {
+function fmt(n: number): string {
   return n.toLocaleString('en')
 }

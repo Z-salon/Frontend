@@ -58,6 +58,43 @@ type ServiceDraft = {
   serverId?: string
 }
 
+/**
+ * The wizard's branding draft. Every field the wizard can edit lives
+ * here. `*PublicId` fields are captured from Cloudinary at upload time
+ * so we can hand them to `PATCH /branding` for asset cleanup (§3.4).
+ */
+interface BrandingDraft {
+  logoUrl: string
+  logoPublicId: string
+  coverImageUrl: string
+  coverPublicId: string
+  primaryColor: string
+  secondaryColor: string
+  description: string
+  aboutUs: string
+  website: string
+  facebookUrl: string
+  instagramUrl: string
+  telegramUrl: string
+  tiktokUrl: string
+}
+
+const EMPTY_BRANDING: BrandingDraft = {
+  logoUrl: '',
+  logoPublicId: '',
+  coverImageUrl: '',
+  coverPublicId: '',
+  primaryColor: '',
+  secondaryColor: '',
+  description: '',
+  aboutUs: '',
+  website: '',
+  facebookUrl: '',
+  instagramUrl: '',
+  telegramUrl: '',
+  tiktokUrl: '',
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -477,10 +514,7 @@ function NumberField({
 function StorefrontPreview({
   branding, business, branches, categories, services,
 }: {
-  branding: {
-    primaryColor: string; secondaryColor: string; logoUrl: string; description: string
-    website: string; instagramUrl: string; telegramUrl: string; tiktokUrl: string; facebookUrl: string
-  }
+  branding: BrandingDraft
   business: { name: string; currency: string; timezone: string }
   branches: BranchDraft[]
   categories: CategoryDraft[]
@@ -645,6 +679,7 @@ export function OnboardingWizard({ onComplete }: OnboardingProps) {
   const [timedOut, setTimedOut] = useState(false)
 
   const business = {
+    id:       activeBusinessId ?? '',
     name:     activeMembership?.business?.name     ?? '',
     currency: activeMembership?.business?.currency ?? 'ETB',
     timezone: activeMembership?.business?.timezone ?? 'Africa/Addis_Ababa',
@@ -680,17 +715,7 @@ export function OnboardingWizard({ onComplete }: OnboardingProps) {
   const [categories, setCategories] = useState<CategoryDraft[]>([])
   const [services, setServices] = useState<ServiceDraft[]>([])
 
-  const [branding, setBranding] = useState({
-    primaryColor: '#C7B9AD',
-    secondaryColor: '#1C1C1C',
-    logoUrl: '',
-    description: '',
-    website: '',
-    instagramUrl: '',
-    telegramUrl: '',
-    tiktokUrl: '',
-    facebookUrl: '',
-  })
+  const [branding, setBranding] = useState<BrandingDraft>(EMPTY_BRANDING)
 
   const TOTAL_STEPS = 7
   const progress = (step / (TOTAL_STEPS - 1)) * 100
@@ -917,16 +942,22 @@ export function OnboardingWizard({ onComplete }: OnboardingProps) {
     if (!guard()) return
     setSaving(true)
     try {
-      await businessApi.updateBranding(activeBusinessId!, {
-        primaryColor:   branding.primaryColor,
-        secondaryColor: branding.secondaryColor,
-        logoUrl:        branding.logoUrl       || undefined,
-        description:    branding.description   || undefined,
-        website:        branding.website       || undefined,
-        instagramUrl:   branding.instagramUrl  || undefined,
-        telegramUrl:    branding.telegramUrl   || undefined,
-        tiktokUrl:      branding.tiktokUrl     || undefined,
-        facebookUrl:    branding.facebookUrl   || undefined,
+      await businessApi.updateBranding(business.id, {
+        logo: branding.logoUrl
+          ? { url: branding.logoUrl, publicId: branding.logoPublicId }
+          : null,
+        cover: branding.coverImageUrl
+          ? { url: branding.coverImageUrl, publicId: branding.coverPublicId }
+          : null,
+        primaryColor: branding.primaryColor || undefined,
+        secondaryColor: branding.secondaryColor || undefined,
+        description: branding.description || undefined,
+        aboutUs: branding.aboutUs || undefined,
+        website: branding.website || undefined,
+        facebookUrl: branding.facebookUrl || undefined,
+        instagramUrl: branding.instagramUrl || undefined,
+        telegramUrl: branding.telegramUrl || undefined,
+        tiktokUrl: branding.tiktokUrl || undefined,
       })
       next()
     } catch (err) {
@@ -1789,11 +1820,8 @@ function StepServices({
 function StepBranding({
   data, onChange, business, businessId, branches, categories, services, onNext, onBack, saving,
 }: {
-  data: {
-    primaryColor: string; secondaryColor: string; logoUrl: string; description: string
-    website: string; instagramUrl: string; telegramUrl: string; tiktokUrl: string; facebookUrl: string
-  }
-  onChange: (d: typeof data) => void
+  data: BrandingDraft
+  onChange: (d: BrandingDraft) => void
   business: { name: string; currency: string; timezone: string }
   businessId: string | null
   branches: BranchDraft[]
@@ -1806,6 +1834,7 @@ function StepBranding({
   const presets = ['#C7B9AD', '#1C1C1C', '#8B7B6E', '#7B9FAB', '#9B8FA8', '#8BAB95']
 
   const logoFolder = businessId ? `business/${businessId}/logo` : 'business/unknown/logo'
+  const coverFolder = businessId ? `business/${businessId}/cover` : 'business/unknown/cover'
 
   return (
     <div>
@@ -1821,8 +1850,30 @@ function StepBranding({
           aspect="square"
           value={data.logoUrl}
           folder={logoFolder}
-          onChange={asset => onChange({ ...data, logoUrl: asset.imageUrl })}
-          onRemove={() => onChange({ ...data, logoUrl: '' })}
+          onChange={asset =>
+            onChange({
+              ...data,
+              logoUrl: asset.imageUrl,
+              logoPublicId: asset.publicId,
+            })
+          }
+          onRemove={() => onChange({ ...data, logoUrl: '', logoPublicId: '' })}
+        />
+
+        <ImageUploader
+          label="Cover image"
+          hint="Wide image, up to 2 MB"
+          aspect="free"
+          value={data.coverImageUrl}
+          folder={coverFolder}
+          onChange={asset =>
+            onChange({
+              ...data,
+              coverImageUrl: asset.imageUrl,
+              coverPublicId: asset.publicId,
+            })
+          }
+          onRemove={() => onChange({ ...data, coverImageUrl: '', coverPublicId: '' })}
         />
 
         <div className="grid grid-cols-2 gap-3">
@@ -1831,7 +1882,7 @@ function StepBranding({
             <div className="flex items-center gap-3 flex-wrap">
               <input
                 type="color"
-                value={data.primaryColor}
+                value={data.primaryColor || '#1C1C1C'}
                 onChange={e => onChange({ ...data, primaryColor: e.target.value })}
                 className="w-11 h-11 rounded-xl border border-line cursor-pointer p-0.5 bg-surface"
               />
@@ -1852,7 +1903,7 @@ function StepBranding({
             <div className="flex items-center gap-3">
               <input
                 type="color"
-                value={data.secondaryColor}
+                value={data.secondaryColor || '#C4A97D'}
                 onChange={e => onChange({ ...data, secondaryColor: e.target.value })}
                 className="w-11 h-11 rounded-xl border border-line cursor-pointer p-0.5 bg-surface"
               />
@@ -1871,6 +1922,19 @@ function StepBranding({
             className="w-full px-3 py-2.5 rounded-xl border border-line bg-surface text-ink text-sm focus:outline-none focus:border-ink-3 transition-colors resize-none"
           />
           <p className="text-xs text-ink-3 mt-1">{data.description.length} / 1000</p>
+        </div>
+
+        <div>
+          <label className="text-sm font-medium text-ink-2 block mb-2">About us</label>
+          <textarea
+            value={data.aboutUs}
+            onChange={e => onChange({ ...data, aboutUs: e.target.value })}
+            maxLength={5000}
+            rows={4}
+            placeholder="Tell customers about your salon — history, specialty, what makes you unique."
+            className="w-full px-3 py-2.5 rounded-xl border border-line bg-surface text-ink text-sm focus:outline-none focus:border-ink-3 transition-colors resize-none"
+          />
+          <p className="text-xs text-ink-3 mt-1">{data.aboutUs.length} / 5000</p>
         </div>
 
         <div className="grid grid-cols-2 gap-3">

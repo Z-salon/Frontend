@@ -11,9 +11,10 @@ export const paymentMethodsApi = {
    * Customer-facing list. Only active methods, ordered by displayOrder.
    * Projection omits isActive/displayOrder/businessId/timestamps.
    */
-  publicList: (businessId: string) =>
+  publicListNoAuth: (businessId: string) =>
     http.get<PublicPaymentMethod[]>(
       `/businesses/${businessId}/payment-methods/public`,
+      { auth: false },
     ),
 
   /**
