@@ -3,8 +3,20 @@ import { useBooking } from '../../context/BookingContext'
 import { otpApi } from '../../../api/otp.api'
 import { publicApi } from '../../../api/public.api'
 import { normalizeEthiopianPhone } from '../../utils/phone'
+import { useCustomerToast } from '../../hooks/useToast'
+import { Button, Field, Pill, Textarea } from '../../components/ui'
+import { StepFrame } from './StepFrame'
+import {
+  IconArrowLeft,
+  IconInfo,
+  IconMessage,
+  IconPhone,
+  IconShield,
+} from '../../components/icons'
+import { extractErrorMessage, formatDateShort, formatIsoTime } from '../../utils/format'
 
 type Phase = 'details' | 'otp' | 'submitting'
+
 
 /**
  * The backend validates `scheduledStart` with `z.string().datetime()`.
@@ -21,8 +33,20 @@ function toUtcIso(input: string): string {
   return d.toISOString() // always ends in Z, always has seconds + ms
 }
 
+/**
+ * `+251911223344` → `+251 ••• ••• 344` so the guest can sanity-check the
+ * number without us echoing the whole thing back at them.
+ */
+function maskPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '')
+  if (digits.length < 7) return phone
+  const countryCode = digits.startsWith('251') ? '251' : digits.slice(0, digits.length - 9)
+  return `+${countryCode} ••• ••• ${digits.slice(-3)}`
+}
+
 export function StepContact() {
   const { businessId, draft, updateDraft, setStep } = useBooking()
+  const toast = useCustomerToast()
   const inFlight = useRef(false)
 
   const [phase, setPhase] = useState<Phase>('details')
@@ -30,6 +54,7 @@ export function StepContact() {
   const [lastName, setLastName] = useState(draft.lastName)
   const [phone, setPhone] = useState(draft.phone)
   const [otp, setOtp] = useState('')
+  const [notes, setNotes] = useState(draft.notes)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -58,11 +83,33 @@ export function StepContact() {
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         phone: normalized,
+        notes: notes.trim(),
       })
       setPhone(normalized)
       setPhase('otp')
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not send the code.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Re-send the SMS without bouncing the guest back to the form. */
+  async function resendOtp() {
+    const normalized = normalizeEthiopianPhone(phone)
+    if (!normalized) {
+      setError('That phone number does not look right. Change it and try again.')
+      return
+    }
+
+    setError(null)
+    setBusy(true)
+    try {
+      await otpApi.request(normalized)
+      setOtp('')
+      toast.success('A fresh code is on its way.')
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Could not resend the code.'))
     } finally {
       setBusy(false)
     }
@@ -125,20 +172,38 @@ export function StepContact() {
         scheduledStart,
       }
       if (draft.staffId) payload.staffId = draft.staffId
-      if (draft.notes?.trim()) payload.notes = draft.notes.trim()
+      if (notes.trim()) payload.notes = notes.trim()
 
-      // TEMP: keep this until the flow is green — remove afterwards.
-      // eslint-disable-next-line no-console
-      console.log('[booking] POST payload', JSON.stringify(payload, null, 2))
+      const appointment = await publicApi.createBooking(businessId, payload as any)
 
-      await publicApi.createBooking(businessId, payload as any)
+      // The backend signals "needs a prepayment" by returning status PENDING
+      // *and* a positive depositAmount. `PENDING` alone is ambiguous — it
+      // also covers the "salon approval required" case, which owes no money
+      // and must NOT route the customer through the receipt step.
+      const depositAmount =
+        appointment.depositAmount !== null && appointment.depositAmount !== undefined
+          ? Number(appointment.depositAmount)
+          : null
 
-      updateDraft({ firstName: fn, lastName: ln, phone: normalizedPhone })
-      setStep('done')
+      const requiresDeposit =
+        appointment.status === 'PENDING' &&
+        depositAmount !== null &&
+        Number.isFinite(depositAmount) &&
+        depositAmount > 0
+
+      updateDraft({
+        firstName: fn,
+        lastName: ln,
+        phone: normalizedPhone,
+        appointmentId: appointment.id,
+        appointmentStatus: appointment.status,
+        requiresDeposit,
+        depositAmount,
+        receiptStatus: null,
+      })
+
+      setStep(requiresDeposit ? 'prepay' : 'done')
     } catch (err) {
-      // TEMP: log the server's complaint so we can see which field failed.
-      // eslint-disable-next-line no-console
-      console.error('[booking] failed', (err as any)?.response?.data ?? err)
       setError(extractErrorMessage(err, 'Could not complete the booking.'))
       setPhase('otp')
     } finally {
@@ -147,130 +212,185 @@ export function StepContact() {
     }
   }
 
+  const submitting = phase === 'submitting'
+
   if (phase === 'details') {
     return (
-      <section>
-        <h2 className="font-display text-2xl mb-1">Your details</h2>
-        <p className="text-sm text-ink-3 mb-6">
-          We'll text a code to confirm your number.
-        </p>
+      <StepFrame
+        title="Who's coming in?"
+        subtitle="We will text you a short code to confirm your number, then your appointment is locked in."
+      >
+        <RecapStrip />
 
-        <div className="flex flex-col gap-4 max-w-md">
-          <Field
-            label="First name"
-            value={firstName}
-            onChange={setFirstName}
-            placeholder="Hana"
-            required
-          />
-          <Field
-            label="Last name"
-            value={lastName}
-            onChange={setLastName}
-            placeholder="Girma"
-            required
-          />
+        <div className="mt-8 flex max-w-md flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field
+              label="First name"
+              value={firstName}
+              onChange={e => setFirstName(e.target.value)}
+              placeholder="Hana"
+              autoComplete="given-name"
+              required
+            />
+            <Field
+              label="Last name"
+              value={lastName}
+              onChange={e => setLastName(e.target.value)}
+              placeholder="Girma"
+              autoComplete="family-name"
+              required
+            />
+          </div>
+
           <Field
             label="Phone"
             value={phone}
-            onChange={setPhone}
+            onChange={e => setPhone(e.target.value)}
             placeholder="+251 9XX XXX XXX"
             type="tel"
+            inputMode="tel"
+            autoComplete="tel"
+            hint="Ethiopian mobile numbers only — we send the confirmation by SMS."
             required
           />
 
-          {error && <p className="text-xs text-[#B03A3A]">{error}</p>}
+          <Textarea
+            label="Anything we should know? (optional)"
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            rows={3}
+            placeholder="Allergies, inspiration photos, preferred stylist…"
+          />
 
-          <button
-            type="button"
-            disabled={busy}
+          {error && <ErrorNote>{error}</ErrorNote>}
+
+          <Button
             onClick={sendOtp}
-            className="h-11 rounded-xl text-sm font-medium bg-ink text-surface hover:bg-ink/90 disabled:opacity-50"
+            loading={busy}
+            fullWidth
+            className="mt-1"
+            iconRight={<IconMessage className="h-4 w-4" />}
           >
             {busy ? 'Sending code…' : 'Send verification code'}
-          </button>
+          </Button>
+
+          <p className="flex items-start gap-2 text-xs leading-relaxed text-ink-3">
+            <IconShield className="mt-px h-4 w-4 flex-shrink-0 text-[color:var(--brand-accent)]" />
+            Your number is only used for this appointment and its reminders.
+          </p>
         </div>
-      </section>
+
+        <div className="mt-7">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setStep('slot')}
+            iconLeft={<IconArrowLeft className="h-3.5 w-3.5" />}
+          >
+            Change time
+          </Button>
+        </div>
+      </StepFrame>
     )
   }
 
   return (
-    <section>
-      <h2 className="font-display text-2xl mb-1">Enter the code</h2>
-      <p className="text-sm text-ink-3 mb-6">
-        We sent a 6-digit code to {phone || draft.phone}.
-      </p>
+    <StepFrame
+      title="Enter your code"
+      subtitle={
+        <>
+          We sent a 6-digit code to{' '}
+          <span className="font-medium text-ink-2">{maskPhone(phone || draft.phone)}</span>.
+        </>
+      }
+    >
+      <RecapStrip />
 
-      <div className="flex flex-col gap-4 max-w-md">
+      <div className="mt-8 flex max-w-md flex-col gap-4">
         <Field
           label="Verification code"
           value={otp}
-          onChange={setOtp}
-          placeholder="123456"
-          type="text"
+          onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+          placeholder="• • • • • •"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={6}
+          className="[&_input]:text-center [&_input]:text-xl [&_input]:font-semibold [&_input]:tracking-[0.6em]"
           required
         />
 
-        {error && <p className="text-xs text-[#B03A3A]">{error}</p>}
+        {error && <ErrorNote>{error}</ErrorNote>}
 
-        <button
-          type="button"
-          disabled={busy || phase === 'submitting'}
+        <Button
           onClick={verifyAndBook}
-          className="h-11 rounded-xl text-sm font-medium bg-ink text-surface hover:bg-ink/90 disabled:opacity-50"
+          loading={submitting}
+          disabled={busy && !submitting}
+          fullWidth
+          className="mt-1"
         >
-          {phase === 'submitting' ? 'Booking…' : 'Confirm booking'}
-        </button>
+          {submitting ? 'Booking…' : 'Confirm booking'}
+        </Button>
 
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => setPhase('details')}
-          className="text-sm text-ink-3 hover:text-ink self-start"
-        >
-          Back
-        </button>
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setOtp('')
+              setError(null)
+              setPhase('details')
+            }}
+            className="focus-ring inline-flex items-center gap-1.5 rounded text-sm text-ink-3 transition-colors hover:text-ink"
+          >
+            <IconArrowLeft className="h-3.5 w-3.5" />
+            Change number
+          </button>
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={resendOtp}
+            className="focus-ring rounded text-sm text-[color:var(--brand-accent)] underline decoration-[color:var(--brand-line)] underline-offset-4 transition-colors hover:decoration-current disabled:opacity-50"
+          >
+            {busy ? 'Resending…' : 'Resend code'}
+          </button>
+        </div>
       </div>
-    </section>
+    </StepFrame>
   )
 }
 
-function Field({
-  label, value, onChange, placeholder, type = 'text', required,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  type?: string
-  required?: boolean
-}) {
+/* ------------------------------------------------------------------ */
+/*  Local pieces                                                       */
+/* ------------------------------------------------------------------ */
+
+/** Compact repeat of the selection so the guest can catch a mistake. */
+function RecapStrip() {
+  const { draft } = useBooking()
+
   return (
-    <div>
-      <label className="text-xs font-semibold text-ink-3 mb-1.5 block">
-        {label}
-        {required && <span className="text-[#B03A3A]"> *</span>}
-      </label>
-      <input
-        type={type}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full h-11 px-3 rounded-xl border border-line text-sm bg-bg text-ink placeholder:text-ink-3 focus:outline-none focus:border-ink"
-      />
+    <div
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border px-4 py-3"
+      style={{ background: 'var(--brand-soft)', borderColor: 'var(--brand-line)' }}
+    >
+      <Pill tone="brand">{draft.serviceName ?? 'Appointment'}</Pill>
+      {draft.branchName && <Pill>{draft.branchName}</Pill>}
+      {draft.date && <Pill>{formatDateShort(draft.date)}</Pill>}
+      {draft.slotStart && (
+        <Pill>
+          <IconPhone className="h-3 w-3" />
+          {formatIsoTime(draft.slotStart)}
+        </Pill>
+      )}
     </div>
   )
 }
 
-function extractErrorMessage(err: unknown, fallback: string): string {
-  const anyErr = err as any
-  const data = anyErr?.response?.data ?? anyErr?.data ?? anyErr
-  if (typeof data?.message === 'string') return data.message
-  if (Array.isArray(data?.errors) && data.errors.length > 0) return String(data.errors[0])
-  if (Array.isArray(data?.details) && data.details.length > 0) {
-    const d = data.details[0]
-    return d?.message ? `${d.field}: ${d.message}` : String(d)
-  }
-  if (typeof anyErr?.message === 'string') return anyErr.message
-  return fallback
+function ErrorNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="flex items-start gap-2.5 rounded-xl border border-[#E8CBCB] bg-bad-soft px-4 py-3 text-sm leading-relaxed text-bad">
+      <IconInfo className="mt-px h-4 w-4 flex-shrink-0" />
+      <span>{children}</span>
+    </p>
+  )
 }

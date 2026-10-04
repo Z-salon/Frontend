@@ -1,19 +1,24 @@
 import { useMemo, useState } from 'react'
 import { useBooking } from '../../context/BookingContext'
+import { Button, Pill } from '../../components/ui'
+import { StepFrame } from './StepFrame'
+import {
+  IconArrowLeft,
+  IconCalendar,
+  IconChevronLeft,
+  IconChevronRight,
+} from '../../components/icons'
+import { formatDateLong, toIsoDate } from '../../utils/format'
 
 const MONTH_LABELS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
-const WEEKDAY = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
+const WEEKDAY = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
-function pad2(n: number) { return String(n).padStart(2, '0') }
-function toISO(d: Date) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
-}
 
 export function StepDate() {
-  const { draft, updateDraft, setStep } = useBooking()
+  const { draft, updateDraft, setStep, requiresStaffChoice } = useBooking()
   const today = useMemo(() => new Date(), [])
   const [viewYear, setViewYear] = useState(today.getFullYear())
   const [viewMonth, setViewMonth] = useState(today.getMonth())
@@ -30,95 +35,145 @@ export function StepDate() {
     return cells
   }, [viewYear, viewMonth])
 
-  const todayISO = toISO(today)
+  const todayISO = toIsoDate(today)
+  const atCurrentMonth =
+    viewYear === today.getFullYear() && viewMonth === today.getMonth()
+
+  function shiftMonth(delta: number) {
+    const d = new Date(viewYear, viewMonth + delta, 1)
+    setViewYear(d.getFullYear())
+    setViewMonth(d.getMonth())
+  }
 
   function pick(d: Date) {
+    // The roster is derived from availability for a single date, so
+    // changing the date invalidates any stylist the customer had picked.
     updateDraft({
-      date: toISO(d),
+      date: toIsoDate(d),
+      staffId: null,
+      staffName: null,
       slotStart: null,
       slotEnd: null,
     })
-    setStep('slot')
+    setStep(requiresStaffChoice ? 'staff' : 'slot')
   }
 
   return (
-    <section>
-      <h2 className="font-display text-2xl mb-1">When?</h2>
-      <p className="text-sm text-ink-3 mb-6">
-        Pick a date to see available times.
-      </p>
-
-      <div className="bg-surface rounded-2xl border border-line p-4 sm:p-5 max-w-sm">
-        <div className="flex items-center justify-between mb-3">
+    <StepFrame
+      title="Pick a day"
+      subtitle={
+        draft.serviceName
+          ? `When would you like your ${draft.serviceName.toLowerCase()}?`
+          : 'When would you like to come in?'
+      }
+    >
+      <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
+        <div
+          className="flex items-center justify-between gap-3 border-b border-line px-4 py-3.5 sm:px-5"
+          style={{ background: 'var(--brand-soft)' }}
+        >
           <button
             type="button"
-            onClick={() => {
-              const d = new Date(viewYear, viewMonth - 1, 1)
-              setViewYear(d.getFullYear()); setViewMonth(d.getMonth())
-            }}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-ink-3 hover:bg-warm-subtle hover:text-ink"
+            onClick={() => shiftMonth(-1)}
+            disabled={atCurrentMonth}
             aria-label="Previous month"
+            className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-surface disabled:pointer-events-none disabled:opacity-30"
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M15 18l-6-6 6-6" />
-            </svg>
+            <IconChevronLeft className="h-4 w-4" />
           </button>
-          <p className="text-sm font-medium text-ink tabular-nums">
-            {MONTH_LABELS[viewMonth]} {viewYear}
+
+          <p className="font-display text-lg tracking-tight text-ink">
+            {MONTH_LABELS[viewMonth]}{' '}
+            <span className="tabular-nums text-ink-3">{viewYear}</span>
           </p>
+
           <button
             type="button"
-            onClick={() => {
-              const d = new Date(viewYear, viewMonth + 1, 1)
-              setViewYear(d.getFullYear()); setViewMonth(d.getMonth())
-            }}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-ink-3 hover:bg-warm-subtle hover:text-ink"
+            onClick={() => shiftMonth(1)}
             aria-label="Next month"
+            className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-surface"
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M9 18l6-6-6-6" />
-            </svg>
+            <IconChevronRight className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="grid grid-cols-7 gap-0.5 mb-1">
-          {WEEKDAY.map(w => (
-            <div key={w} className="h-7 flex items-center justify-center text-[10px] font-semibold text-ink-3 uppercase tracking-wider">
-              {w}
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-7 gap-0.5">
-          {grid.map((cell, i) => {
-            const iso = toISO(cell.d)
-            const disabled = iso < todayISO
-            const selected = iso === draft.date
-            const isToday = iso === todayISO
-            return (
-              <button
+        <div className="p-4 sm:p-5">
+          <div className="mb-1.5 grid grid-cols-7">
+            {WEEKDAY.map((w, i) => (
+              <div
                 key={i}
-                type="button"
-                disabled={disabled}
-                onClick={() => pick(cell.d)}
-                className={`
-                  h-9 rounded-lg text-xs tabular-nums flex items-center justify-center transition-colors
-                  ${disabled
-                    ? 'text-ink-3/30 cursor-not-allowed'
-                    : selected
-                      ? 'bg-ink text-surface font-medium'
-                      : cell.inMonth
-                        ? 'text-ink-2 hover:bg-warm-subtle hover:text-ink'
-                        : 'text-ink-3/60 hover:bg-warm-subtle hover:text-ink'}
-                  ${!selected && isToday && !disabled ? 'ring-1 ring-ink-3/40' : ''}
-                `}
+                className="flex h-7 items-center justify-center text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-3"
               >
-                {cell.d.getDate()}
-              </button>
-            )
-          })}
+                {w}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-7 gap-1">
+            {grid.map((cell, i) => {
+              const iso = toIsoDate(cell.d)
+              const disabled = iso < todayISO
+              const selected = iso === draft.date
+              const isToday = iso === todayISO
+
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => pick(cell.d)}
+                  aria-label={cell.d.toDateString()}
+                  aria-pressed={selected}
+                  className={`
+                    relative flex h-11 items-center justify-center rounded-xl text-sm
+                    tabular-nums transition-all duration-200 focus-ring
+                    ${
+                      selected
+                        ? 'font-semibold text-[color:var(--brand-on-primary)] shadow-[0_8px_18px_-10px_rgba(var(--brand-rgb),0.9)]'
+                        : disabled
+                          ? 'cursor-not-allowed text-ink-3/30'
+                          : cell.inMonth
+                            ? 'text-ink-2 hover:bg-warm-subtle hover:text-ink'
+                            : 'text-ink-3/50 hover:bg-warm-subtle/70'
+                    }
+                  `}
+                  style={selected ? { background: 'var(--brand-primary)' } : undefined}
+                >
+                  {cell.d.getDate()}
+                  {!selected && isToday && (
+                    <span
+                      className="absolute bottom-1.5 h-1 w-1 rounded-full bg-[color:var(--brand-primary)]"
+                      aria-hidden="true"
+                    />
+                  )}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
-    </section>
+
+      {draft.date && (
+        <p className="mt-5 flex items-center gap-2.5 text-sm text-ink-2">
+          <IconCalendar className="h-4 w-4 text-ink-3" />
+          <span>
+            <span className="text-ink-3">Selected</span>{' '}
+            <span className="font-medium text-ink">{formatDateLong(draft.date)}</span>
+          </span>
+          <Pill tone="brand">{draft.serviceName ?? 'Appointment'}</Pill>
+        </p>
+      )}
+
+      <div className="mt-7">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setStep('service')}
+          iconLeft={<IconArrowLeft className="h-3.5 w-3.5" />}
+        >
+          Change service
+        </Button>
+      </div>
+    </StepFrame>
   )
 }

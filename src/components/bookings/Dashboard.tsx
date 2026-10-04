@@ -202,8 +202,6 @@ export function BookingDashboard({
 
     return [
       { value: FILTER_ALL,     label: 'All staff' },
-      { value: FILTER_NOSHOW,  label: 'No-shows' },
-      { value: FILTER_EXPIRED, label: 'Expired' },
       ...sorted.map(s => ({ value: s.id, label: staffFullName(s) })),
     ]
   }, [staff, isAllBranches, activeBranchId])

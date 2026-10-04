@@ -108,6 +108,16 @@ export default function App() {
   /* ── Auth flow state ─────────────────────────────────────────────── */
   const [authScreen, setAuthScreen] = useState<AuthScreenType>("login")
   const [navSection, setNavSection] = useState<NavSection>("dashboard")
+
+  /* Submission the Feedback section should open on arrival. Set from an
+     appointment's "View response" button; cleared once FeedbackPage has
+     consumed it so a later manual nav doesn't re-open a stale item. */
+  const [feedbackFocusId, setFeedbackFocusId] = useState<string | null>(null)
+
+  function openFeedbackSubmission(submissionId: string) {
+    setFeedbackFocusId(submissionId)
+    setNavSection("feedback")
+  }
   const [pendingPhone, setPendingPhone] = useState<string>("")
 
   /* ── Onboarding gate ─────────────────────────────────────────────── */
@@ -203,34 +213,45 @@ export default function App() {
   const [showWalkIn, setShowWalkIn] = useState(false)
 
   /* ── Appointments fetch ──────────────────────────────────────────── */
-  useEffect(() => {
+  //
+  // `reloadAppointments` is also handed to CustomersPage so that saving
+  // service usage / payments / a status change from inside the appointment
+  // drawer re-syncs the stats, Recent activity and History lists, which are
+  // all derived from this array. The sequence number drops responses from
+  // superseded calls, so overlapping refreshes can't land out of order.
+  const apptSeq = useRef(0)
+
+  async function reloadAppointments(opts?: { silent?: boolean }) {
     if (!activeBusinessId) {
       setAppointments([])
       return
     }
 
-    let cancelled = false
-    setApptLoading(true)
+    const seq = ++apptSeq.current
+    if (!opts?.silent) setApptLoading(true)
 
-    ;(async () => {
-      try {
-        const res = await appointmentsApi.list(activeBusinessId, {
-          limit: 100,
-        })
-        if (cancelled) return
-        setAppointments(normalizeArray<Appointment>(res))
-      } catch (err) {
-        if (cancelled) return
-        console.error("[app] appointments load failed", err)
-        toast.error(extractErrorMessage(err, "Could not load appointments."))
-      } finally {
-        if (!cancelled) setApptLoading(false)
-      }
-    })()
-
-    return () => {
-      cancelled = true
+    try {
+      const res = await appointmentsApi.list(activeBusinessId, {
+        limit: 100,
+      })
+      if (seq !== apptSeq.current) return
+      setAppointments(normalizeArray<Appointment>(res))
+    } catch (err) {
+      if (seq !== apptSeq.current) return
+      console.error("[app] appointments load failed", err)
+      toast.error(extractErrorMessage(err, "Could not load appointments."))
+    } finally {
+      if (seq === apptSeq.current && !opts?.silent) setApptLoading(false)
     }
+  }
+
+  useEffect(() => {
+    void reloadAppointments()
+    return () => {
+      // Invalidate anything still in flight.
+      apptSeq.current++
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBusinessId])
 
   /* ── Support slices fetch ────────────────────────────────────────── */
@@ -500,6 +521,7 @@ export default function App() {
               )
               setSelectedAppt(updated)
             }}
+            onViewFeedback={openFeedbackSubmission}
           />
         )}
       </div>
@@ -530,6 +552,7 @@ export default function App() {
               )
               setSelectedAppt(updated)
             }}
+            onViewFeedback={openFeedbackSubmission}
           />
         </div>
       )}
@@ -549,15 +572,22 @@ export default function App() {
         return (
           <CustomersPage
             appointments={appointments.map(toMockAppt)}
+            onAppointmentsChange={() => void reloadAppointments({ silent: true })}
           />
         )
 
       case "feedback":
-        return <FeedbackPage />
+        return (
+          <FeedbackPage
+            focusSubmissionId={feedbackFocusId}
+            onFocusHandled={() => setFeedbackFocusId(null)}
+          />
+        )
 
       case "finance":
         return (
           <FinancePage
+            businessId={activeBusinessId ?? undefined}
             transactions={transactions}
             expenseCategories={expCats}
             paymentMethods={payMethods}

@@ -2,9 +2,11 @@ import { http } from './http';
 import type {
   CategoryBranchAssignment,
   CreateServiceCategoryInput,
+  SampleWork,
   SampleWorkInput,
   ServiceCategory,
   ServiceStatus,
+  UpdateSampleWorkInput,
   UpdateServiceCategoryInput,
 } from '../types/api';
 
@@ -69,13 +71,38 @@ export const serviceCategoriesApi = {
   },
 
   // ── §8.6 Sample works ─────────────────────────────────────────────────
+  //
+  // Writes are OWNER/ADMIN only (enforced by verifyOwnerOrAdmin in the
+  // service). Reads allow any active member, but a BRANCH_MANAGER is scoped
+  // to categories active in one of their own branches — that surfaces as a
+  // 403 on `list`, so callers should show it as "no access" rather than
+  // "empty".
   sampleWorks: {
+    /** §8.6 — 201 returns the created row, not just its id. */
     create: (categoryId: string, input: SampleWorkInput) =>
-      http.post<{ id: string }>(
+      http.post<SampleWork>(
         `/service-categories/${categoryId}/sample-works`,
         input,
       ),
 
+    /** Newest first (server orders by createdAt desc). */
+    list: (categoryId: string) =>
+      http.get<SampleWork[]>(
+        `/service-categories/${categoryId}/sample-works`,
+      ),
+
+    get: (sampleWorkId: string) =>
+      http.get<SampleWork>(`/sample-works/${sampleWorkId}`),
+
+    /**
+     * Replacing `publicId` does NOT delete the previous asset server-side —
+     * only `remove` does that. The old image is orphaned unless the client
+     * cleans it up.
+     */
+    update: (sampleWorkId: string, patch: UpdateSampleWorkInput) =>
+      http.patch<SampleWork>(`/sample-works/${sampleWorkId}`, patch),
+
+    /** Also best-effort deletes the stored image by `publicId`. */
     remove: (sampleWorkId: string) =>
       http.delete<void>(`/sample-works/${sampleWorkId}`),
   },

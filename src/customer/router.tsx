@@ -24,7 +24,9 @@ export function navigate(to: string) {
   if (to === window.location.pathname + window.location.search) return
   window.history.pushState({}, '', to)
   window.dispatchEvent(new PopStateEvent('popstate'))
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  // 'instant' rather than 'smooth': the page underneath is swapped out
+  // wholesale, so animating the scroll just draws attention to the jump.
+  window.scrollTo({ top: 0, behavior: 'instant' })
 }
 
 export function matchRoute(

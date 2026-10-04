@@ -7,6 +7,9 @@ import type {
   AppointmentStatusHistoryEntry,
   BookingSource,
   ServiceUsage,
+  ServiceUsageInput,
+  ServiceUsageUpdateInput,
+  AppointmentPaymentsInput,
   AppointmentPayment,
 } from '../types/api'
 
@@ -283,6 +286,79 @@ export const appointmentsApi = {
   listServiceUsages: (businessId: string, appointmentId: string) =>
     http.get<ServiceUsage[]>(
       `/businesses/${businessId}/appointments/${appointmentId}/service-usages`,
+    ),
+
+  /**
+   * §6.1 — Record what was actually performed.
+   *
+   * Rejected with 400 unless the appointment is CHECKED_IN, IN_PROGRESS, or
+   * COMPLETED, so this is safe to call before the COMPLETED transition.
+   * Returns 201 with the created record.
+   */
+  addServiceUsage: (
+    businessId: string,
+    appointmentId: string,
+    input: ServiceUsageInput,
+  ) =>
+    http.post<ServiceUsage>(
+      `/businesses/${businessId}/appointments/${appointmentId}/service-usages`,
+      input,
+    ),
+
+  /**
+   * §6.3 — Update a record. Only the provided fields change; `productsUsed`
+   * replaces the stored array wholesale. Returns the updated record.
+   */
+  updateServiceUsage: (
+    businessId: string,
+    usageId: string,
+    patch: ServiceUsageUpdateInput,
+  ) =>
+    http.patch<ServiceUsage>(
+      `/businesses/${businessId}/service-usages/${usageId}`,
+      patch,
+    ),
+
+  /* ---------------------------------------------------------------- */
+  /*  §7.1 — Record money received (supports split tender)             */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `POST /businesses/:businessId/appointments/:id/payments`
+   *
+   * Send `payments: [...]` to record several methods in one transaction —
+   * 1000 cash + 1500 card creates two rows atomically. Each entry needs a
+   * method belonging to this business and active, and `amount > 0`, else 400.
+   * Every row is created with `status=PAID` and `paidAt=now`.
+   *
+   * There is no edit endpoint: to change a recorded amount you void it
+   * (§7.2) and record a replacement, which keeps the audit trail intact.
+   */
+  recordPayments: (
+    businessId: string,
+    appointmentId: string,
+    input: AppointmentPaymentsInput,
+  ) =>
+    http.post<AppointmentPayment[]>(
+      `/businesses/${businessId}/appointments/${appointmentId}/payments`,
+      input,
+    ),
+
+  /**
+   * §7.2 — Void a payment. `reason` is required (400 without it) and only
+   * `PAID` payments can be voided. Status becomes `VOIDED`, which is
+   * terminal — this is not a delete and not reversible.
+   */
+  voidPayment: (businessId: string, paymentId: string, reason: string) =>
+    http.patch<AppointmentPayment>(
+      `/businesses/${businessId}/payments/${paymentId}/void`,
+      { reason },
+    ),
+
+  /** §6.4 — Hard delete. Returns `{ data: null }`. */
+  deleteServiceUsage: (businessId: string, usageId: string) =>
+    http.delete<null>(
+      `/businesses/${businessId}/service-usages/${usageId}`,
     ),
 
   /* ---------------------------------------------------------------- */

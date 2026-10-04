@@ -4,6 +4,7 @@ import { Landing } from './screens/Landing'
 import { Booking } from './screens/Booking'
 import { Confirmation } from './screens/Confirmation'
 import { Feedback } from './screens/Feedback'
+import { CustomerToastProvider } from './hooks/useToast'
 import { useEffect } from 'react'
 
 /**
@@ -51,6 +52,14 @@ export function CustomerApp() {
   }, [pathname])
 
   const match = matchRoute(pathname, routes)
-  if (!match) return <NotFound />
-  return <>{match.route.render(match.params)}</>
+
+  return (
+    <CustomerToastProvider>
+      {/* Keyed on the path so every navigation gets a soft fade rather
+          than a hard swap between two full-height pages. */}
+      <div key={pathname} className="animate-fade-in">
+        {match ? match.route.render(match.params) : <NotFound />}
+      </div>
+    </CustomerToastProvider>
+  )
 }

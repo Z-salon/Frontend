@@ -15,6 +15,8 @@ import { useToast } from '../ui/Toast'
 import { appointmentsApi } from '../../api/appointments.api'
 import { availabilityApi, type AvailabilitySlot } from '../../api/availability.api'
 import { branchesApi } from '../../api/branches.api'
+import { customersApi } from '../../api/customers.api'
+import { normalizeEthiopianPhone } from '../../customer/utils/phone'
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -250,6 +252,153 @@ function EmptyState({
 }
 
 /* ------------------------------------------------------------------ */
+/*  AddCustomerPanel                                                   */
+/*                                                                     */
+/*  Inline create-customer form. Rendered in place of the customer     */
+/*  picker inside a booking modal so the receptionist never loses the  */
+/*  rest of the form state when a walk-in needs registering.           */
+/* ------------------------------------------------------------------ */
+
+function AddCustomerPanel({
+  businessId,
+  onCreated,
+  onCancel,
+}: {
+  businessId: string
+  onCreated: (c: Customer) => void
+  onCancel: () => void
+}) {
+  const toast = useToast()
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({
+    firstName: '',
+    lastName: '',
+    phone: '',
+  })
+
+  /**
+   * Live normalization feedback for the phone field.
+   *  - empty            → neutral hint
+   *  - parseable        → "Will be saved as +251…"
+   *  - non-empty, bad   → warning hint
+   */
+  const trimmedPhone = form.phone.trim()
+  const normalizedPhone = trimmedPhone
+    ? normalizeEthiopianPhone(trimmedPhone)
+    : null
+  const phoneLooksInvalid = trimmedPhone.length > 0 && normalizedPhone === null
+
+  const phoneHint = phoneLooksInvalid
+    ? 'Not a valid Ethiopian mobile yet — try 0988888888 or +251988888888.'
+    : normalizedPhone
+      ? `Will be saved as ${normalizedPhone}`
+      : 'Ethiopian mobile. We convert to +251… automatically.'
+
+  async function handleSave() {
+    const firstName = form.firstName.trim()
+    const lastName = form.lastName.trim()
+
+    if (!firstName || !lastName) {
+      toast.error('First and last names are required.')
+      return
+    }
+
+    // Only phones we can canonicalize are sent. If the receptionist
+    // typed something we can't parse, stop and say so rather than
+    // sending a raw string the server may reject or store as-is.
+    const phone = trimmedPhone ? normalizedPhone : null
+    if (trimmedPhone && !phone) {
+      toast.error(
+        'Phone number must be an Ethiopian mobile, e.g. 0988888888 or +251988888888.',
+      )
+      return
+    }
+
+    setSaving(true)
+    try {
+      /**
+       * If a phone was supplied, check for an existing match first so we
+       * don't 409 on a customer the receptionist forgot was already on
+       * file. `match` is read-only — safe to call unconditionally when a
+       * phone is present. Always pass the *normalized* form so the
+       * lookup is against the canonical value the server stores.
+       */
+      if (phone) {
+        try {
+          const match = await customersApi.match(businessId, phone)
+          if (match.matched && match.customer) {
+            toast.info(
+              `${customerName(match.customer)} is already on file — using their record.`,
+            )
+            onCreated(match.customer)
+            return
+          }
+        } catch {
+          // Match failures are non-fatal; fall through to create.
+        }
+      }
+
+      const created = await customersApi.create(businessId, {
+        firstName,
+        lastName,
+        phones: phone ? [{ phone, isPrimary: true }] : undefined,
+      })
+      toast.success('Customer added')
+      onCreated(created)
+    } catch (err) {
+      const first = (err as any)?.fieldErrors?.[0]
+      toast.error(
+        first
+          ? `${first.field}: ${first.message}`
+          : extractErrorMessage(err, 'Could not add the customer.'),
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-line bg-bg p-4">
+      <p className="text-sm font-medium text-ink">Add a new customer</p>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Input
+          label="First name"
+          value={form.firstName}
+          autoComplete="given-name"
+          onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))}
+        />
+        <Input
+          label="Last name"
+          value={form.lastName}
+          autoComplete="family-name"
+          onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))}
+        />
+      </div>
+
+      <Input
+        label="Phone (optional)"
+        value={form.phone}
+        placeholder="0988888888 or +251988888888"
+        type="tel"
+        inputMode="tel"
+        hint={phoneHint}
+        onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+      />
+
+      <div className="flex justify-end gap-2 pt-1">
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={handleSave} loading={saving}>
+          Save customer
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  LockedField                                                        */
 /*                                                                     */
 /*  A read-only field that visually matches a StyledSelect trigger     */
@@ -324,6 +473,14 @@ export function NewBookingModal({
   const [slotsLoading, setSlotsLoading] = useState(false)
   const [branchIntervals, setBranchIntervals] = useState<number | null>(null)
 
+  /**
+   * Customers created from inside this modal. Kept local so the newly
+   * registered person shows up in the picker immediately, without
+   * waiting for the parent to refetch its `customers` list.
+   */
+  const [localCustomers, setLocalCustomers] = useState<Customer[]>([])
+  const [addingCustomer, setAddingCustomer] = useState(false)
+
   const fetchIdRef = useRef(0)
 
   const [form, setForm] = useState({
@@ -339,6 +496,12 @@ export function NewBookingModal({
     deposit: '',
     notes: '',
   })
+
+  // ── Customers visible in the picker ───────────────────────────────
+  const allCustomers = useMemo(
+    () => [...localCustomers, ...customers],
+    [localCustomers, customers],
+  )
 
   // ── Categories & services scoped to the branch ────────────────────
   const servicesForBranch = useMemo(
@@ -410,6 +573,11 @@ export function NewBookingModal({
       deposit: '',
       notes: '',
     })
+
+    // Clear the local buffer so a previously-added customer doesn't
+    // appear twice once the parent refetches.
+    setLocalCustomers([])
+    setAddingCustomer(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
@@ -513,13 +681,13 @@ export function NewBookingModal({
   // ── Option lists ──────────────────────────────────────────────────
   const customerOptions = useMemo(
     () =>
-      customers.map(c => ({
+      allCustomers.map(c => ({
         value: c.id,
         label:
           customerName(c) +
           (primaryPhone(c) ? ` · ${primaryPhone(c)}` : ''),
       })),
-    [customers],
+    [allCustomers],
   )
 
   const categoryOptions = useMemo(
@@ -613,13 +781,42 @@ export function NewBookingModal({
   return (
     <Modal open={open} onClose={onClose} title="New Booking" width="max-w-xl">
       <div className="px-6 py-5 flex flex-col gap-5">
-        <StyledSelect
-          label="Customer"
-          value={form.customerId}
-          placeholder={customers.length === 0 ? 'No customers yet' : 'Select a customer…'}
-          options={customerOptions}
-          onChange={id => setForm(f => ({ ...f, customerId: id }))}
-        />
+        {/* ── Customer — picker or inline add form ──────────────── */}
+        {addingCustomer ? (
+          <AddCustomerPanel
+            businessId={businessId}
+            onCancel={() => setAddingCustomer(false)}
+            onCreated={created => {
+              setLocalCustomers(prev => [created, ...prev])
+              setForm(f => ({ ...f, customerId: created.id }))
+              setAddingCustomer(false)
+            }}
+          />
+        ) : (
+          <div className="flex items-end gap-2">
+            <div className="flex-1 min-w-0">
+              <StyledSelect
+                label="Customer"
+                value={form.customerId}
+                placeholder={
+                  allCustomers.length === 0
+                    ? 'No customers yet — add one'
+                    : 'Select a customer…'
+                }
+                options={customerOptions}
+                onChange={id => setForm(f => ({ ...f, customerId: id }))}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setAddingCustomer(true)}
+              className="focus-ring h-10 px-3 rounded-[10px] border border-line bg-surface text-sm font-medium text-ink-2 hover:border-warm hover:text-ink transition-colors whitespace-nowrap"
+              aria-label="Add new customer"
+            >
+              + New
+            </button>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-4">
           {lockedBranchId ? (
@@ -817,7 +1014,7 @@ export function NewBookingModal({
         <Button
           onClick={handleSubmit}
           loading={saving}
-          disabled={saving || !svc || !form.startIso}
+          disabled={saving || !svc || !form.startIso || addingCustomer}
         >
           Create booking
         </Button>
@@ -865,6 +1062,13 @@ export function WalkInModal({
   const toast = useToast()
   const [saving, setSaving] = useState(false)
 
+  /**
+   * Same local-add pattern as NewBookingModal. Kept per-modal so a
+   * registration in one doesn't leak into the other mid-session.
+   */
+  const [localCustomers, setLocalCustomers] = useState<Customer[]>([])
+  const [addingCustomer, setAddingCustomer] = useState(false)
+
   const [form, setForm] = useState({
     branchId: lockedBranchId ?? '',
     customerId: '',
@@ -873,6 +1077,12 @@ export function WalkInModal({
     staffId: '',
     notes: '',
   })
+
+  // ── Customers visible in the picker ───────────────────────────────
+  const allCustomers = useMemo(
+    () => [...localCustomers, ...customers],
+    [localCustomers, customers],
+  )
 
   // ── Seed on open ──────────────────────────────────────────────────
   useEffect(() => {
@@ -899,6 +1109,9 @@ export function WalkInModal({
       staffId: '',
       notes: '',
     })
+
+    setLocalCustomers([])
+    setAddingCustomer(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, lockedBranchId])
 
@@ -970,8 +1183,9 @@ export function WalkInModal({
   const svc = services.find(s => s.id === form.serviceId) ?? null
 
   const customerOptions = useMemo(
-    () => customers.map(c => ({ value: c.id, label: customerName(c) })),
-    [customers],
+    () =>
+      allCustomers.map(c => ({ value: c.id, label: customerName(c) })),
+    [allCustomers],
   )
 
   const branchOptions = useMemo(
@@ -1078,13 +1292,42 @@ export function WalkInModal({
           />
         )}
 
-        <StyledSelect
-          label="Customer"
-          value={form.customerId}
-          placeholder={customers.length === 0 ? 'No customers yet' : 'Select a customer…'}
-          options={customerOptions}
-          onChange={id => setForm(f => ({ ...f, customerId: id }))}
-        />
+        {/* ── Customer — picker or inline add form ──────────────── */}
+        {addingCustomer ? (
+          <AddCustomerPanel
+            businessId={businessId}
+            onCancel={() => setAddingCustomer(false)}
+            onCreated={created => {
+              setLocalCustomers(prev => [created, ...prev])
+              setForm(f => ({ ...f, customerId: created.id }))
+              setAddingCustomer(false)
+            }}
+          />
+        ) : (
+          <div className="flex items-end gap-2">
+            <div className="flex-1 min-w-0">
+              <StyledSelect
+                label="Customer"
+                value={form.customerId}
+                placeholder={
+                  allCustomers.length === 0
+                    ? 'No customers yet — add one'
+                    : 'Select a customer…'
+                }
+                options={customerOptions}
+                onChange={id => setForm(f => ({ ...f, customerId: id }))}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setAddingCustomer(true)}
+              className="focus-ring h-10 px-3 rounded-[10px] border border-line bg-surface text-sm font-medium text-ink-2 hover:border-warm hover:text-ink transition-colors whitespace-nowrap"
+              aria-label="Add new customer"
+            >
+              + New
+            </button>
+          </div>
+        )}
 
         <StyledSelect
           label="Category"
@@ -1157,7 +1400,7 @@ export function WalkInModal({
         <Button
           onClick={handleStart}
           loading={saving}
-          disabled={saving || !svc || servicesForBranch.length === 0}
+          disabled={saving || !svc || servicesForBranch.length === 0 || addingCustomer}
         >
           Start appointment
         </Button>

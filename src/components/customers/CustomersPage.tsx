@@ -1,12 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Customer, FeedbackSubmission, FeedbackCategoryType } from '../../types/api'
 import type { Appointment } from '../../types'
+// The list rows are the mock-shaped `Appointment` above; the panel needs the
+// real §5 payload, so it is imported under a distinct name.
+import type { Appointment as ApiAppointment } from '../../types/api'
 import { Button, Input, Textarea, Modal, Avatar } from '../ui'
 import { EmptyState } from '../services/ServicesPage'
 import { useToast } from '../ui/Toast'
 import { useBusiness } from '../../contexts/BusinessContext'
+import { useBranch } from '../../contexts/BranchContext'
 import { customersApi } from '../../api/customers.api'
 import { feedbackApi } from '../../api/feedback.api'
+import { appointmentsApi } from '../../api/appointments.api'
+import { useAppointmentPaidTotals } from '../../hooks/useAppointmentPaidTotals'
+import { AppointmentPanel } from '../bookings/AppointmentPanel'
 
 /* ------------------------------------------------------------------ */
 /*  Phone normalization                                                */
@@ -57,9 +64,13 @@ interface UiCustomerFeedback {
 
 interface CustomersPageProps {
   appointments: Appointment[]
+  /* Re-fetch the appointments list that every figure on this page is derived
+     from. Fired after a mutation inside the appointment drawer so stats,
+     Recent activity and History all reflect it without a manual reload. */
+  onAppointmentsChange?: () => void
 }
 
-export function CustomersPage({ appointments }: CustomersPageProps) {
+export function CustomersPage({ appointments, onAppointmentsChange }: CustomersPageProps) {
   const toast = useToast()
   const { activeBusinessId } = useBusiness()
 
@@ -76,8 +87,124 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
   const [feedbackLoading, setFeedbackLoading] = useState(false)
 
   const [activeTab, setActiveTab] =
-    useState<'overview' | 'appointments' | 'feedback' | 'notes'>('overview')
+    useState<'overview' | 'history' | 'feedback' | 'notes'>('overview')
+
+  /* History — the full §5 appointment behind a clicked list row. The list
+     rows are mock-shaped (serviceName/date/price already resolved), while
+     AppointmentPanel reads the real payload (service.name, totalAmount,
+     scheduledStart), so the row is re-fetched on click. */
+  const [historyApptId, setHistoryApptId] = useState<string | null>(null)
+  const [historyAppt,   setHistoryAppt]   = useState<ApiAppointment | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError,   setHistoryError]   = useState<string | null>(null)
+
   const [showModal, setShowModal] = useState(false)
+
+  /* Branches drive the panel's timezone so a history entry renders its
+     times the same way the bookings sidebar does. */
+  const { branches } = useBranch()
+
+  /* `toMockAppt` fills `branchName` with the branch id, so resolve the real
+     label here — otherwise the overview prints a raw UUID as the branch. */
+  const branchLabel = (branchId: string | undefined): string => {
+    if (!branchId) return '—'
+    return branches.find(b => b.id === branchId)?.name ?? '—'
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  History panel                                                    */
+  /* ---------------------------------------------------------------- */
+
+  /* Dismissing the drawer and opening another row can overlap now that an
+     outside click closes it, so tag each request and drop replies that no
+     longer match the row on screen. */
+  const historyReq = useRef(0)
+
+  function closeHistory() {
+    historyReq.current++
+    setHistoryApptId(null)
+    setHistoryAppt(null)
+    setHistoryError(null)
+    setHistoryLoading(false)
+  }
+
+  /* Clicking the row that's already open closes the drawer instead of
+     re-opening it — same affordance the bookings calendar gives you.
+     `switchTab` is only honoured when actually opening, so dismissing from
+     the Overview doesn't yank you over to History. */
+  function toggleHistory(row: Appointment, opts?: { switchTab?: boolean }) {
+    if (historyApptId === row.id) {
+      closeHistory()
+      return
+    }
+    if (opts?.switchTab) setActiveTab('history')
+    void openHistory(row)
+  }
+
+  async function openHistory(row: Appointment) {
+    if (!activeBusinessId) return
+    const req = ++historyReq.current
+    setHistoryApptId(row.id)
+    setHistoryAppt(null)
+    setHistoryError(null)
+    setHistoryLoading(true)
+    try {
+      const full = await appointmentsApi.get(activeBusinessId, row.id)
+      if (req !== historyReq.current) return
+      setHistoryAppt(full)
+    } catch (err) {
+      if (req !== historyReq.current) return
+      console.error('[customers] appointment load failed', err)
+      setHistoryError(
+        extractErrorMessage(err, 'Could not load this appointment.'),
+      )
+    } finally {
+      if (req === historyReq.current) setHistoryLoading(false)
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Drawer dismissal                                                */
+  /*                                                                     */
+  /*  The mobile sheet has a backdrop that closes on click, but the     */
+  /*  desktop drawer is a bare column with no backdrop, so a click       */
+  /*  anywhere else on the page left it hanging open. Both hosts are     */
+  /*  tracked so clicks inside the panel — including the completion      */
+  /*  modal, which renders inline rather than through a portal — never   */
+  /*  count as outside.                                                  */
+  /* ---------------------------------------------------------------- */
+  const historyPanelRef = useRef<HTMLDivElement>(null)
+  const historySheetRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (historyApptId === null) return
+
+    const isInside = (t: Node | null) =>
+      !!t &&
+      (historyPanelRef.current?.contains(t) === true ||
+        historySheetRef.current?.contains(t) === true)
+
+    const onPointerDown = (e: MouseEvent) => {
+      const t = e.target
+      if (!(t instanceof Element)) return
+      /* Rows handle their own open/close toggle on click. Letting this
+         listener close first would clear the id, and the row's handler would
+         then see "not open" and re-open it — the toggle would never close. */
+      if (t.closest('[data-history-row]')) return
+      if (isInside(t)) return
+      closeHistory()
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeHistory()
+    }
+
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [historyApptId])
 
   /* ---------------------------------------------------------------- */
   /*  Data loading                                                    */
@@ -244,14 +371,81 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
   }, [appointments])
 
   /* ---------------------------------------------------------------- */
+  /*  Actual money taken                                               */
+  /*                                                                     */
+  /*  A completed appointment can be settled for less than (or more     */
+  /*  than) the quoted price — discounts, comps, partial payments,      */
+  /*  split tender. So for COMPLETED rows we show the sum of the        */
+  /*  non-voided payments instead of `price`, which is only what the     */
+  /*  appointment was created for.                                      */
+  /*                                                                     */
+  /*  Hooks can't be called inside the `if (selectedDetail)` render      */
+  /*  branch below, so the fan-out is prepared up here.                 */
+  /* ---------------------------------------------------------------- */
+  const completedIdsForDetail = useMemo(() => {
+    if (!selectedDetail) return []
+    return appointments
+      .filter(a => a.customerId === selectedDetail.id && a.status === 'completed')
+      .map(a => a.id)
+  }, [appointments, selectedDetail])
+
+  const { totals: paidTotals, reload: reloadPaidTotals } = useAppointmentPaidTotals(
+    activeBusinessId,
+    completedIdsForDetail,
+  )
+
+  /* Falls back to the quoted price until the payments for that row come
+     back, so nothing ever renders as 0 while loading. */
+  function priceFor(a: Appointment): number {
+    if (a.status !== 'completed') return Number(a.price) || 0
+    const paid = paidTotals[a.id]
+    return paid === undefined ? Number(a.price) || 0 : paid
+  }
+
+  /* "Total spent" is money in, so it gets the same treatment — but only
+     once a row's payments have actually resolved. Untouched rows keep
+     their quoted contribution, which keeps the figure stable while the
+     fan-out is still in flight rather than climbing row by row. */
+  const statsForDisplay = useMemo(() => {
+    if (!Object.keys(paidTotals).length) return statsFor
+    const merged = new Map(statsFor)
+    for (const a of appointments) {
+      if (a.status !== 'completed') continue
+      const paid = paidTotals[a.id]
+      if (paid === undefined) continue
+      const entry = merged.get(a.customerId)
+      if (!entry) continue
+      merged.set(a.customerId, {
+        ...entry,
+        totalSpent: entry.totalSpent + (paid - (Number(a.price) || 0)),
+      })
+    }
+    return merged
+  }, [statsFor, appointments, paidTotals])
+
+  /* ---------------------------------------------------------------- */
   /*  Render — detail view                                            */
   /* ---------------------------------------------------------------- */
 
   if (selectedDetail) {
-    const stat = statsFor.get(selectedDetail.id)
+    const stat = statsForDisplay.get(selectedDetail.id)
     const custAppts = appointments
       .filter(a => a.customerId === selectedDetail.id)
       .sort((a, b) => b.date.localeCompare(a.date))
+
+    /* Newest first. `date` is an ISO slice of `scheduledStart`
+       (see toMockAppt), so the existing string sort is chronological and
+       the cap takes the most recent — upcoming included. */
+    const RECENT_LIMIT = 8
+    const recentAppts = custAppts.slice(0, RECENT_LIMIT)
+
+    /* The clicked row still carries the resolved branch/staff labels that the
+       §5 detail payload omits, so the panel gets the same names the bookings
+       sidebar would show. */
+    const historyRow =
+      custAppts.find(a => a.id === historyApptId) ?? null
+    const historyBranch =
+      branches.find(b => b.id === historyRow?.branchId) ?? null
 
     // Filter feedback submissions to those that carry this customer id.
     // Anonymous submissions are skipped because the server nulls out
@@ -263,8 +457,57 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
     const displayName = `${selectedDetail.firstName} ${selectedDetail.lastName}`.trim()
     const primaryPhone = primaryPhoneOf(selectedDetail)
 
+    /* Shared by the desktop drawer and the mobile sheet so both hosts show
+       identical content — same pattern as the bookings sidebar. */
+    function historyPanel() {
+      if (historyLoading) {
+        return (
+          <div className="h-full bg-surface flex items-center justify-center">
+            <p className="text-sm text-ink-3">Loading appointment…</p>
+          </div>
+        )
+      }
+
+      if (historyError) {
+        return (
+          <div className="h-full bg-surface flex flex-col items-center justify-center gap-3 px-5 text-center">
+            <p className="text-sm text-ink-2">{historyError}</p>
+            <Button size="sm" variant="ghost" onClick={closeHistory}>
+              Close
+            </Button>
+          </div>
+        )
+      }
+
+      if (!historyAppt) return null
+
+      return (
+        <AppointmentPanel
+          appointment={historyAppt}
+          businessId={activeBusinessId!}
+          timezone={historyBranch?.timezone}
+          branchName={historyBranch?.name ?? historyRow?.branchName}
+          customerName={displayName}
+          customerPhone={primaryPhone ?? undefined}
+          staffName={historyRow?.staffName}
+          onClose={closeHistory}
+          onChanged={updated => {
+            setHistoryAppt(updated)
+            /* Service usage, payments and status changes all land here.
+               Refresh both sources the page reads from: the shared
+               appointments list and the per-appointment paid totals. */
+            reloadPaidTotals()
+            onAppointmentsChange?.()
+          }}
+        />
+      )
+    }
+
     return (
-      <div className="flex flex-col h-full overflow-hidden">
+      <>
+      {/* `relative` anchors the appointment drawer, which slides in from
+          the right on lg+ exactly like the bookings page. */}
+      <div className="relative flex flex-col h-full overflow-hidden">
         <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-5 bg-surface border-b border-line flex-shrink-0">
           <button
             onClick={closeDetail}
@@ -304,7 +547,7 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
           </div>
 
           <div className="flex gap-1 mt-5 overflow-x-auto">
-            {(['overview', 'appointments', 'feedback', 'notes'] as const).map(tab => (
+            {(['overview', 'history', 'feedback', 'notes'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -336,7 +579,8 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
                     <div className="min-w-0">
                       <p className="font-medium text-ink truncate">{stat.upcoming.serviceName}</p>
                       <p className="text-sm text-ink-3 mt-0.5 truncate">
-                        {stat.upcoming.date} · {stat.upcoming.startTime} · {stat.upcoming.branchName}
+                        {stat.upcoming.date} · {stat.upcoming.startTime} ·{' '}
+                        {branchLabel(stat.upcoming.branchId)}
                       </p>
                     </div>
                     <span className="text-sm font-semibold text-ink flex-shrink-0">
@@ -348,18 +592,42 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
               {custAppts.length > 0 && (
                 <div className="bg-surface rounded-2xl border border-line p-5">
                   <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
-                    Last visit
+                    Recent activity
                   </p>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-medium text-ink truncate">{custAppts[0].serviceName}</p>
-                      <p className="text-sm text-ink-3 mt-0.5 truncate">
-                        {custAppts[0].date} · {custAppts[0].staffName} · {custAppts[0].branchName}
-                      </p>
-                    </div>
-                    <span className="text-sm font-semibold text-ink flex-shrink-0">
-                      {Number(custAppts[0].price).toLocaleString()} ETB
-                    </span>
+                  <p className="text-xs text-ink-3 -mt-2 mb-3">
+                    {recentAppts.length === custAppts.length
+                      ? 'Every appointment on record.'
+                      : `Latest ${recentAppts.length} of ${custAppts.length} appointments.`}{' '}
+                    Open one for service usage and payments.
+                  </p>
+
+                  <div className="flex flex-col gap-1.5">
+                    {recentAppts.map(a => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        data-history-row="true"
+                        onClick={() => toggleHistory(a, { switchTab: true })}
+                        className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-bg transition-colors flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-ink truncate">
+                            {a.serviceName}
+                          </p>
+                          <p className="text-xs text-ink-3 mt-0.5 truncate">
+                            {a.date} · {a.startTime} · {a.staffName}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          <span className="text-sm font-medium text-ink-2">
+{priceFor(a).toLocaleString()} ETB
+                          </span>
+                          <span className="text-xs text-ink-3 capitalize w-20 text-right">
+                            {a.status.replace('-', ' ')}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
@@ -371,15 +639,22 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
             </div>
           )}
 
-          {activeTab === 'appointments' && (
+          {activeTab === 'history' && (
             <div className="max-w-2xl flex flex-col gap-2">
+              <p className="text-xs text-ink-3 mb-1">
+                Every appointment on record. Open one to see the full
+                appointment — service usage, payments, and status actions.
+              </p>
               {custAppts.length === 0 ? (
                 <p className="text-sm text-ink-3 py-10 text-center">No appointments yet.</p>
               ) : (
                 custAppts.map(a => (
-                  <div
+                  <button
                     key={a.id}
-                    className="bg-surface rounded-xl border border-line px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4"
+                    type="button"
+                    data-history-row="true"
+                    onClick={() => toggleHistory(a)}
+                    className="w-full text-left bg-surface rounded-xl border border-line px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 hover:bg-bg transition-colors"
                   >
                     <div className="flex items-center gap-3 sm:contents">
                       <div className="w-20 flex-shrink-0">
@@ -391,18 +666,21 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-ink truncate">{a.serviceName}</p>
                       <p className="text-xs text-ink-3 truncate">
-                        {a.staffName} · {a.branchName}
+                        {a.staffName} · {branchLabel(a.branchId)}
                       </p>
                     </div>
                     <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-4 flex-shrink-0">
                       <span className="text-sm font-semibold text-ink-2">
-                        {Number(a.price).toLocaleString()} ETB
+                        {priceFor(a).toLocaleString()} ETB
                       </span>
                       <span className="text-xs text-ink-3 capitalize">
                         {a.status.replace('-', ' ')}
                       </span>
+                      <span aria-hidden="true" className="text-ink-3 text-xs">
+                        &#8250;
+                      </span>
                     </div>
-                  </div>
+                  </button>
                 ))
               )}
             </div>
@@ -429,6 +707,51 @@ export function CustomersPage({ appointments }: CustomersPageProps) {
           )}
         </div>
       </div>
+
+{/* ── Mobile backdrop (below lg) ──────────────────────────── */}
+      {historyApptId !== null && (
+        <div
+          className="
+            fixed inset-0 z-40 bg-ink/30 backdrop-blur-[2px]
+            transition-opacity duration-200 ease-out
+            opacity-100
+            lg:hidden
+          "
+          onClick={closeHistory}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* ── Desktop right panel (lg+) ───────────────────────────── */}
+      <div
+        ref={historyPanelRef}
+        className="
+          hidden lg:block
+          absolute inset-y-0 right-0 z-30
+          overflow-hidden
+          transition-[width] duration-200 ease-out
+        "
+        style={{ width: historyApptId !== null ? 320 : 0 }}
+      >
+        {historyPanel()}
+      </div>
+
+      {/* ── Mobile bottom sheet (below lg) ──────────────────────── */}
+      {historyApptId !== null && (
+        <div
+          ref={historySheetRef}
+          className="
+            lg:hidden
+            fixed inset-x-0 bottom-0 z-50
+            max-h-[85vh] rounded-t-2xl overflow-hidden
+            bg-surface border-t border-line shadow-2xl
+            animate-sheet-in
+          "
+        >
+          {historyPanel()}
+        </div>
+      )}
+    </>
     )
   }
 

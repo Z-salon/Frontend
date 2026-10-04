@@ -8,6 +8,7 @@ import type {
   FeedbackSubmitInput,
   FeedbackSubmitResponse,
   FeedbackListQuery,
+  FeedbackResendResult,
 } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -83,6 +84,28 @@ export const feedbackApi = {
   detail: (businessId: string, submissionId: string) =>
     http.get<FeedbackSubmission>(
       `/businesses/${businessId}/feedback/${submissionId}`,
+    ),
+
+  /* ---------------------------------------------------------------- */
+  /*  §12.8 Admin — resend the feedback request (PROPOSED)            */
+  /*                                                                  */
+  /*  Not implemented server-side yet. Contract documented in          */
+  /*  docs/FEEDBACK-RESEND-PROPOSAL.md. Until it lands this call      */
+  /*  404s, so the admin UI treats failure as non-blocking.           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `POST /businesses/{businessId}/appointments/{appointmentId}/feedback-request/resend`
+   *
+   * Re-mints a token (invalidating the previous link) and re-sends the SMS.
+   *   404 FEEDBACK_REQUEST_NOT_FOUND — appointment never completed, or
+   *                                    feedback was disabled at the time
+   *   409 FEEDBACK_ALREADY_SUBMITTED — already answered; do not resend
+   *   429 — rate limited (proposed: 3 per appointment per 24h)
+   */
+  resendAppointment: (businessId: string, appointmentId: string) =>
+    http.post<FeedbackResendResult>(
+      `/businesses/${businessId}/appointments/${appointmentId}/feedback-request/resend`,
     ),
 
   /* ---------------------------------------------------------------- */

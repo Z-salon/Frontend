@@ -5,10 +5,34 @@ import type {
   Appointment,
   AppointmentStatus,
   AppointmentStaffRef,
+  AppointmentReceipt,
 } from '../../types/api'
 import { StatusBadge, Avatar, Button, Modal } from '../ui'
 import { useToast } from '../ui/Toast'
 import { appointmentsApi } from '../../api/appointments.api'
+import { receiptsApi } from '../../api/receipts.api'
+import { useAppointmentFeedback } from '../../hooks/useAppointmentFeedback'
+import { useServiceUsages } from '../../hooks/useServiceUsages'
+import { ServiceUsageSection } from './ServiceUsageSection'
+import { AppointmentPaymentsSection } from './AppointmentPaymentsSection'
+import { useAppointmentPayments } from '../../hooks/useAppointmentPayments'
+import { ReceiptReviewModal } from '../bookings/ReceiptReviewModal'
+import {
+  PaymentsForm,
+  emptyPaymentsDraft,
+  isPaymentsDraftEmpty,
+  paymentsDraftToInput,
+  validatePaymentsDraft,
+  type PaymentsDraft,
+} from './PaymentsForm'
+import {
+  ServiceUsageForm,
+  draftToInput,
+  emptyDraft,
+  isDraftEmpty,
+  validateDraft,
+  type ServiceUsageDraft,
+} from './ServiceUsageForm'
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -29,6 +53,11 @@ interface PanelProps {
   staffName?: string
   onClose: () => void
   onChanged: (updated: Appointment) => void
+  /**
+   * Opens the Feedback section on a specific submission. Fired by the
+   * post-visit feedback block; omitted, the block renders read-only.
+   */
+  onViewFeedback?: (submissionId: string) => void
 }
 
 /* ------------------------------------------------------------------ */
@@ -540,7 +569,7 @@ function TimePicker({
 /* ------------------------------------------------------------------ */
 
 export function AppointmentPanel({
-  appointment,
+  appointment: appointmentProp,
   businessId,
   timezone = DEFAULT_TZ,
   branchName,
@@ -549,9 +578,56 @@ export function AppointmentPanel({
   staffName,
   onClose,
   onChanged,
+  onViewFeedback,
 }: PanelProps) {
   const toast = useToast()
   const [busyKey, setBusyKey] = useState<string | null>(null)
+
+  /**
+   * The panel keeps its own copy of the appointment so a local write
+   * (approve a receipt, change status, complete) reflects immediately,
+   * without waiting for the parent to re-thread a new prop.
+   *
+   * Re-sync policy: only when the *identity* changes (a different
+   * appointment is selected). An update to the same appointment — the
+   * parent refetch handing back a fresh object with the same id — does
+   * not clobber the panel's local state, which prevents the brief
+   * flicker that would happen if the parent's list lags the write.
+   */
+  const [current, setCurrent] = useState<Appointment | null>(appointmentProp)
+
+  const currentIdRef = useRef<string | null>(appointmentProp?.id ?? null)
+
+  useEffect(() => {
+    const nextId = appointmentProp?.id ?? null
+    if (nextId !== currentIdRef.current) {
+      currentIdRef.current = nextId
+      setCurrent(appointmentProp)
+    } else if (
+      // Same id but the parent handed us something meaningfully newer
+      // (e.g. it refetched and the server value is now available). We
+      // accept it only when the panel isn't mid-write — busyKey is null.
+      busyKey === null &&
+      appointmentProp !== null &&
+      current !== null &&
+      appointmentProp !== current &&
+      // Only accept if the status actually differs. Otherwise ignore —
+      // the parent may pass a re-created object on every render.
+      appointmentProp.status !== current.status
+    ) {
+      setCurrent(appointmentProp)
+    }
+  }, [appointmentProp, busyKey, current])
+
+  const appointment = current
+  const appointmentId = appointment?.id ?? null
+  const appointmentStatus = appointment?.status ?? null
+
+  /** Apply a locally-changed appointment and let the parent know. */
+  const applyLocal = (updated: Appointment) => {
+    setCurrent(updated)
+    onChanged(updated)
+  }
 
   const [showNoShow, setShowNoShow] = useState(false)
   const [noShowReason, setNoShowReason] = useState('')
@@ -566,6 +642,66 @@ export function AppointmentPanel({
   const [showComplete, setShowComplete] = useState(false)
   const [completeTime, setCompleteTime] = useState('') // "HH:mm" 24h
   const [submittingComplete, setSubmittingComplete] = useState(false)
+
+  const [sendingFeedback, setSendingFeedback] = useState(false)
+
+  // Service usage — recorded while completing, then read-only afterwards.
+  const serviceUsage = useServiceUsages(businessId, appointmentId ?? undefined, appointmentStatus ?? undefined)
+  const [completeDraft, setCompleteDraft] = useState<ServiceUsageDraft>(emptyDraft())
+  const [completeUsageError, setCompleteUsageError] = useState<string | null>(null)
+
+  // Payments recorded in the same modal. `paidTotal` already includes anything
+  // recorded earlier, so the outstanding hint stays accurate.
+  const payments = useAppointmentPayments(businessId, appointmentId ?? undefined)
+  const [completePayDraft, setCompletePayDraft] = useState<PaymentsDraft>(emptyPaymentsDraft())
+  const [completePayError, setCompletePayError] = useState<string | null>(null)
+
+  // Post-visit feedback. Only meaningful once the appointment is COMPLETED,
+  // and the hook stays idle for every other status.
+  const feedback = useAppointmentFeedback(businessId, appointment)
+
+  /* ── Receipt: fetch when the appointment is PENDING ──────────────── */
+
+  const [receipt, setReceipt] = useState<AppointmentReceipt | null>(null)
+  const [receiptLoading, setReceiptLoading] = useState(false)
+  const [showReceiptImage, setShowReceiptImage] = useState(false)
+  const [showReceiptReview, setShowReceiptReview] = useState(false)
+
+  useEffect(() => {
+    if (!appointmentId) {
+      setReceipt(null)
+      return
+    }
+    // The receipt block only lives while the appointment is PENDING.
+    // After approval the appointment flips to CONFIRMED and the payment
+    // moves into the Payments section, so we stop fetching.
+    if (appointmentStatus !== 'PENDING') {
+      setReceipt(null)
+      return
+    }
+
+    let cancelled = false
+    setReceiptLoading(true)
+    receiptsApi
+      .getForAppointment(businessId, appointmentId)
+      .then(r => {
+        if (cancelled) return
+        setReceipt(r)
+      })
+      .catch(() => {
+        // 404 = no receipt yet. Normal for a PENDING appointment waiting
+        // on the customer, so stay silent.
+        if (cancelled) return
+        setReceipt(null)
+      })
+      .finally(() => {
+        if (!cancelled) setReceiptLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [businessId, appointmentId, appointmentStatus])
 
   if (!appointment) return null
 
@@ -596,9 +732,6 @@ export function AppointmentPanel({
   const staff = staffName?.trim() || staffRefName(ref) || '—'
 
   const totalAmount = Number(appointment.totalAmount || 0)
-  const depositAmount = appointment.depositAmount
-    ? Number(appointment.depositAmount)
-    : null
 
   /* ---------------- Completion modal helpers ---------------- */
 
@@ -637,6 +770,13 @@ export function AppointmentPanel({
 
         if (action.prompt === 'actualEnd') {
           setCompleteTime(endTime)
+          // Prefill with what was booked — staff usually confirm it rather
+          // than retype, and it keeps the record consistent with the
+          // appointment even if the catalogue name changed since booking.
+          setCompleteDraft(emptyDraft(appointment.service.name))
+          setCompleteUsageError(null)
+          setCompletePayDraft(emptyPaymentsDraft())
+          setCompletePayError(null)
           setShowComplete(true)
           setBusyKey(null)
           return
@@ -673,7 +813,7 @@ export function AppointmentPanel({
       }
 
       toast.success('Appointment updated')
-      onChanged(updated)
+      applyLocal(updated)
     } catch (err) {
       console.error('[appointment] action failed', err)
       toast.error(extractErrorMessage(err, 'Could not update the appointment.'))
@@ -686,7 +826,68 @@ export function AppointmentPanel({
     if (!appointment) return
     if (completeInvalid || !previewActualEnd) return
 
+    // Validate everything before any write, so we never half-complete.
+    const wantsUsage = !isDraftEmpty(completeDraft)
+    if (wantsUsage) {
+      const invalid = validateDraft(completeDraft)
+      if (invalid) {
+        setCompleteUsageError(invalid)
+        return
+      }
+    }
+
+    const wantsPayment = !isPaymentsDraftEmpty(completePayDraft)
+    if (wantsPayment) {
+      const invalid = validatePaymentsDraft(completePayDraft)
+      if (invalid) {
+        setCompletePayError(invalid)
+        return
+      }
+    }
+
     setSubmittingComplete(true)
+    setCompleteUsageError(null)
+    setCompletePayError(null)
+
+    // Usage is saved FIRST, while the appointment is still IN_PROGRESS —
+    // §6.1 accepts CHECKED_IN / IN_PROGRESS / COMPLETED. If the usage write
+    // fails we abort rather than completing, because once the appointment is
+    // COMPLETED the staff member has moved on and the entry is easy to forget.
+    // `add` resolves null on failure rather than throwing.
+    let usageSaved = false
+    if (wantsUsage) {
+      const created = await serviceUsage.add(draftToInput(completeDraft))
+      if (!created) {
+        setCompleteUsageError(
+          'Could not save the service usage, so the appointment was not completed. Check the details and try again.',
+        )
+        setSubmittingComplete(false)
+        return
+      }
+      usageSaved = true
+    }
+
+    // Payments next. Each block is optional, but a block the user filled in
+    // must succeed — otherwise we'd complete the appointment and silently
+    // drop what they recorded.
+    let paymentSaved = false
+    if (wantsPayment) {
+      const input = paymentsDraftToInput(completePayDraft)
+      if (input) {
+        const created = await payments.record(input)
+        if (!created) {
+          setCompletePayError(
+            usageSaved
+              ? 'Service usage was saved, but the payment could not be recorded, so the appointment was not completed. Record the payment from the panel, then retry — do not add the usage again.'
+              : 'Could not record the payment, so the appointment was not completed. Check the amounts and try again.',
+          )
+          setSubmittingComplete(false)
+          return
+        }
+        paymentSaved = true
+      }
+    }
+
     try {
       const updated = await appointmentsApi.updateStatus(
         businessId,
@@ -696,12 +897,34 @@ export function AppointmentPanel({
           actualEnd: previewActualEnd,
         },
       )
-      toast.success('Appointment completed')
-      onChanged(updated)
+      const savedBits = [
+        wantsUsage && 'service usage',
+        paymentSaved && 'payment',
+      ].filter(Boolean) as string[]
+      toast.success(
+        savedBits.length
+          ? `Appointment completed and ${savedBits.join(' and ')} saved`
+          : 'Appointment completed',
+      )
+      applyLocal(updated)
       setShowComplete(false)
     } catch (err) {
       console.error('[appointment] complete failed', err)
-      toast.error(extractErrorMessage(err, 'Could not complete the appointment.'))
+      const savedBits = [
+        usageSaved && 'service usage',
+        paymentSaved && 'payment',
+      ].filter(Boolean) as string[]
+
+      if (savedBits.length) {
+        // Those blocks are persisted but the appointment is still
+        // IN_PROGRESS. Say so plainly — otherwise the natural response is to
+        // re-enter them and create duplicate records.
+        toast.error(
+          `${savedBits.join(' and ')} saved, but completing the appointment failed. Retry "Mark as complete" — do not add them again.`,
+        )
+      } else {
+        toast.error(extractErrorMessage(err, 'Could not complete the appointment.'))
+      }
     } finally {
       setSubmittingComplete(false)
     }
@@ -717,7 +940,7 @@ export function AppointmentPanel({
         noShowReason.trim() || undefined,
       )
       toast.success('Marked as no-show')
-      onChanged(updated)
+      applyLocal(updated)
       setShowNoShow(false)
     } catch (err) {
       console.error('[appointment] no-show failed', err)
@@ -736,7 +959,7 @@ export function AppointmentPanel({
         refund: cancelRefund,
       })
       toast.success('Appointment cancelled')
-      onChanged(updated)
+      applyLocal(updated)
       setShowCancel(false)
     } catch (err) {
       console.error('[appointment] cancel failed', err)
@@ -780,6 +1003,68 @@ export function AppointmentPanel({
             </div>
           </div>
 
+          {/* ── Pending receipt block (only for PENDING appointments) ── */}
+
+          {appointment.status === 'PENDING' && (
+            <div className="px-5 py-4 border-b border-line">
+              <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
+                Deposit
+              </p>
+
+              {receiptLoading && (
+                <p className="text-sm text-ink-3">Checking for a receipt…</p>
+              )}
+
+              {!receiptLoading && receipt && receipt.status === 'PENDING' && (
+                <button
+                  type="button"
+                  onClick={() => setShowReceiptImage(true)}
+                  className="focus-ring w-full flex items-start gap-3 rounded-xl border border-dashed border-warm bg-warm-subtle/40 px-3.5 py-3 text-left hover:bg-warm-subtle transition-colors"
+                >
+                  <span
+                    className="mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
+                    style={{
+                      background: 'var(--brand-soft-strong)',
+                      color: 'var(--brand-accent)',
+                    }}
+                    aria-hidden="true"
+                  >
+                    <ReceiptIcon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium text-ink">
+                      Receipt submitted
+                    </span>
+                    <span className="mt-0.5 block text-xs text-ink-3">
+                      {Number(receipt.submittedAmount).toLocaleString()} ETB ·{' '}
+                      click to view
+                    </span>
+                  </span>
+                </button>
+              )}
+
+              {!receiptLoading && receipt && receipt.status === 'REJECTED' && (
+                <div className="rounded-xl border border-dashed border-line bg-bg px-3.5 py-3">
+                  <p className="text-sm font-medium text-ink">Receipt rejected</p>
+                  {receipt.rejectionReason && (
+                    <p className="mt-0.5 text-xs text-ink-3">
+                      {receipt.rejectionReason}
+                    </p>
+                  )}
+                  <p className="mt-1.5 text-xs text-ink-3">
+                    Waiting for the customer to submit a corrected receipt.
+                  </p>
+                </div>
+              )}
+
+              {!receiptLoading && !receipt && (
+                <p className="text-sm text-ink-3">
+                  No receipt yet — waiting on the customer.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="px-5 py-4 border-b border-line">
             <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3.5">
               Details
@@ -797,28 +1082,6 @@ export function AppointmentPanel({
             </div>
           </div>
 
-          <div className="px-5 py-4 border-b border-line">
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3.5">
-              Payment
-            </p>
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-ink-3">Price</span>
-                <span className="text-sm font-semibold text-ink">
-                  {totalAmount.toLocaleString()} ETB
-                </span>
-              </div>
-              {depositAmount != null && (
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-ink-3">Deposit</span>
-                  <span className="text-sm text-ink">
-                    {depositAmount.toLocaleString()} ETB
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-
           {appointment.notes && (
             <div className="px-5 py-4">
               <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
@@ -827,6 +1090,109 @@ export function AppointmentPanel({
               <p className="text-sm text-ink-2 leading-relaxed">
                 {appointment.notes}
               </p>
+            </div>
+          )}
+
+          <div className="px-5 py-4 border-t border-line">
+            <ServiceUsageSection
+              businessId={businessId}
+              appointmentId={appointment.id}
+              status={appointment.status}
+              serviceName={appointment.service.name}
+              onChanged={() => onChanged(appointment)}
+            />
+          </div>
+
+          <div className="px-5 py-4 border-t border-line">
+            <AppointmentPaymentsSection
+              businessId={businessId}
+              appointmentId={appointment.id}
+              totalAmount={totalAmount}
+              onChanged={() => onChanged(appointment)}
+            />
+          </div>
+
+          {feedback.state !== 'inactive' && (
+            <div className="px-5 py-4 border-t border-line">
+              <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
+                Customer feedback
+              </p>
+
+              {feedback.state === 'loading' && (
+                <p className="text-sm text-ink-3">Checking for a response…</p>
+              )}
+
+              {feedback.state === 'awaiting' && (
+                <div className="flex flex-col gap-3">
+                  <p className="text-sm text-ink-2 leading-relaxed">
+                    No response yet. The customer received a feedback link when
+                    this appointment was completed, and it stays open for seven
+                    days.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    fullWidth
+                    loading={sendingFeedback}
+                    disabled={sendingFeedback}
+                    onClick={async () => {
+                      setSendingFeedback(true)
+                      const delivered = await feedback.resend()
+                      setSendingFeedback(false)
+
+                      if (delivered === null) {
+                        toast.error('Could not resend the feedback link.')
+                        return
+                      }
+                      if (delivered) {
+                        toast.success('Feedback link sent to the customer.')
+                      } else {
+                        toast.error('Link created, but the SMS was not delivered.')
+                      }
+                      feedback.reload()
+                    }}
+                  >
+                    Resend feedback link
+                  </Button>
+                </div>
+              )}
+
+              {feedback.state === 'error' && (
+                <p className="text-sm text-ink-3 leading-relaxed">
+                  Could not check for a response.
+                  <button
+                    type="button"
+                    onClick={feedback.reload}
+                    className="ml-1.5 underline underline-offset-2 hover:text-ink"
+                  >
+                    Retry
+                  </button>
+                </p>
+              )}
+
+              {feedback.state === 'received' && feedback.submission && (
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-ink">
+                      Response received
+                      {feedback.submission.isAnonymous && ' · anonymous'}
+                    </span>
+                    <span className="text-xs text-ink-3 flex-shrink-0">
+                      {new Date(feedback.submission.submittedAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {onViewFeedback && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      fullWidth
+                      onClick={() => onViewFeedback(feedback.submission!.id)}
+                    >
+                      View response
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -851,16 +1217,125 @@ export function AppointmentPanel({
                 </Button>
               )
             })}
+
+            {/* Quick path into the reviewer when the deposit is what's
+                holding up the confirmation. Only shown when a PENDING
+                receipt exists. */}
+            {appointment.status === 'PENDING' &&
+              receipt?.status === 'PENDING' && (
+                <Button
+                  variant="secondary"
+                  fullWidth
+                  size="sm"
+                  onClick={() => setShowReceiptReview(true)}
+                >
+                  Review deposit
+                </Button>
+              )}
           </div>
         )}
       </div>
+
+      {/* ── Receipt image modal (view-only) ─────────────────────────── */}
+      <Modal
+        open={showReceiptImage}
+        onClose={() => setShowReceiptImage(false)}
+        title="Customer receipt"
+        width="max-w-lg"
+      >
+        {receipt && (
+          <div className="px-6 py-5 flex flex-col gap-4">
+            <div className="rounded-xl border border-line overflow-hidden bg-bg">
+              <img
+                src={receipt.receiptImageUrl}
+                alt="Receipt submitted by the customer"
+                className="w-full max-h-[70vh] object-contain bg-bg"
+              />
+            </div>
+
+            <div className="bg-bg rounded-xl px-4 py-3 flex flex-col gap-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-ink-3">Declared amount</span>
+                <span className="text-ink font-medium">
+                  {Number(receipt.submittedAmount).toLocaleString()} ETB
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-ink-3">Submitted</span>
+                <span className="text-ink">
+                  {new Date(receipt.submittedAt).toLocaleString()}
+                </span>
+              </div>
+              {receipt.customerNote && (
+                <div className="pt-2 border-t border-line">
+                  <p className="text-xs text-ink-3 mb-1">Customer note</p>
+                  <p className="text-sm text-ink-2 leading-relaxed">
+                    {receipt.customerNote}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="px-6 pb-6 flex gap-3 justify-end border-t border-line pt-4">
+          <Button
+            variant="ghost"
+            onClick={() => setShowReceiptImage(false)}
+          >
+            Close
+          </Button>
+          <Button
+            onClick={() => {
+              setShowReceiptImage(false)
+              setShowReceiptReview(true)
+            }}
+          >
+            Review
+          </Button>
+        </div>
+      </Modal>
+
+      {/* ── Receipt review modal (approve / reject) ─────────────────── */}
+      <ReceiptReviewModal
+        open={showReceiptReview}
+        businessId={businessId}
+        receipt={receipt}
+        onClose={() => setShowReceiptReview(false)}
+        onVerified={updated => {
+          setShowReceiptReview(false)
+
+          if (!appointment) return
+
+          if (updated.status === 'APPROVED') {
+            /**
+             * §7.3 — approving a PENDING receipt atomically confirms
+             * the appointment server-side. Mirror that locally so the
+             * panel flips to CONFIRMED immediately: the deposit block
+             * disappears, the status badge updates, and the action
+             * buttons change from Confirm/Cancel to Check in/No-show/
+             * Cancel.
+             */
+            applyLocal({
+              ...appointment,
+              status: 'CONFIRMED',
+              confirmedAt: appointment.confirmedAt ?? new Date().toISOString(),
+            })
+          } else if (updated.status === 'REJECTED') {
+            // The appointment stays PENDING. Show the rejection reason
+            // in the deposit block so the receptionist can tell the
+            // customer what to fix.
+            setReceipt(updated)
+          }
+        }}
+      />
 
       {/* ── Complete appointment modal ─────────────────────────────── */}
       <Modal
         open={showComplete}
         onClose={() => !submittingComplete && setShowComplete(false)}
         title="Mark as complete?"
-        width="max-w-md"
+        width="max-w-lg"
       >
         <div className="px-6 py-5 flex flex-col gap-4">
           <p className="text-sm text-ink-2 leading-relaxed">
@@ -907,6 +1382,49 @@ export function AppointmentPanel({
                 : undefined
             }
           />
+
+          <div className="border-t border-line pt-4 flex flex-col gap-3">
+            <div>
+              <p className="text-sm font-medium text-ink">Service usage</p>
+              <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+                Log what was actually performed and any products used.
+                Optional, but it keeps the service history accurate.
+              </p>
+            </div>
+
+            <ServiceUsageForm
+              draft={completeDraft}
+              onChange={setCompleteDraft}
+              disabled={submittingComplete}
+            />
+
+            {completeUsageError && (
+              <p className="text-xs text-[#B06A6A]">{completeUsageError}</p>
+            )}
+          </div>
+
+          <div className="border-t border-line pt-4 flex flex-col gap-3">
+            <div>
+              <p className="text-sm font-medium text-ink">Payment</p>
+              <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+                Record what was collected, split across methods if needed.
+                Optional.
+              </p>
+            </div>
+
+            <PaymentsForm
+              draft={completePayDraft}
+              onChange={setCompletePayDraft}
+              methods={payments.methods}
+              disabled={submittingComplete}
+              outstanding={Math.max(0, totalAmount - payments.paidTotal)}
+              onReloadMethods={payments.reloadMethods}
+            />
+
+            {completePayError && (
+              <p className="text-xs text-[#B06A6A]">{completePayError}</p>
+            )}
+          </div>
         </div>
         <div className="px-6 pb-6 flex gap-3 justify-end border-t border-line pt-4">
           <Button
@@ -919,9 +1437,11 @@ export function AppointmentPanel({
           <Button
             onClick={() => void submitComplete()}
             loading={submittingComplete}
-            disabled={submittingComplete || completeInvalid}
+            disabled={submittingComplete || completeInvalid || !!completeUsageError}
           >
-            Mark as complete
+            {isDraftEmpty(completeDraft) && isPaymentsDraftEmpty(completePayDraft)
+              ? 'Mark as complete'
+              : 'Complete & save'}
           </Button>
         </div>
       </Modal>
@@ -1040,6 +1560,33 @@ export function AppointmentPanel({
         </div>
       </Modal>
     </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Receipt icon                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Small document-with-lines glyph. Lives here because it's only used by
+ * the pending-receipt block and doesn't warrant a slot in the shared
+ * icon set (which is otherwise all customer-facing).
+ */
+function ReceiptIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M6 3.5h12v17l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5-2 1.5v-17Z" />
+      <path d="M9 8.5h6M9 12h6M9 15.5h4" />
+    </svg>
   )
 }
 

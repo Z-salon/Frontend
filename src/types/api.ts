@@ -656,6 +656,29 @@ export interface SampleWorkInput {
   description?: string;
 }
 
+/** §8.6 — the row shape returned by every sample-work endpoint. */
+export interface SampleWork {
+  id: string;
+  categoryId: string;
+  name: string;
+  description: string | null;
+  url: string;
+  publicId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * §8.6 — every field optional. `description: null` clears it, which is
+ * different from omitting the key (leaves it untouched).
+ */
+export interface UpdateSampleWorkInput {
+  name?: string;
+  url?: string;
+  publicId?: string;
+  description?: string | null;
+}
+
 // ============================================================
 // §5 / §9 Appointments
 // ============================================================
@@ -756,6 +779,12 @@ export interface AppointmentStatusHistoryEntry {
 // §6 Service usage
 // ============================================================
 
+export interface ServiceUsageProduct {
+  name: string
+  quantity: number
+  unit: string
+}
+
 export interface ServiceUsage {
   id: string;
   appointmentId: string;
@@ -764,10 +793,36 @@ export interface ServiceUsage {
   serviceId: string | null;
   serviceName: string;
   serviceDetails: string | null;
-  productsUsed: Array<{ name: string; quantity: number; unit: string }> | null;
+  productsUsed: ServiceUsageProduct[] | null;
   notes: string | null;
   recordedById: string;
   recordedAt: string;
+  updatedAt?: string | null;
+  /** Only on the list endpoint (§6.2) — identifies who logged the entry. */
+  recordedBy?: { id: string; phone?: string | null } | null;
+}
+
+/**
+ * `POST /businesses/:businessId/appointments/:id/service-usages`
+ *
+ * Only accepted while the appointment is CHECKED_IN, IN_PROGRESS, or
+ * COMPLETED. `branchId` and `recordedById` are derived server-side, so
+ * they are never sent. `serviceName` is the only required field.
+ */
+export interface ServiceUsageInput {
+  serviceName: string
+  serviceId?: string | null
+  serviceDetails?: string | null
+  productsUsed?: ServiceUsageProduct[] | null
+  notes?: string | null
+}
+
+/** `PATCH /businesses/:businessId/service-usages/:usageId` — any subset. */
+export interface ServiceUsageUpdateInput {
+  serviceName?: string
+  serviceDetails?: string | null
+  productsUsed?: ServiceUsageProduct[] | null
+  notes?: string | null
 }
 
 // ============================================================
@@ -787,6 +842,29 @@ export interface AppointmentPayment {
   notes: string | null;
   recordedById: string;
   paidAt: string;
+  /** Only on the list endpoint (§7.2). */
+  recordedBy?: { id: string; phone?: string | null } | null;
+}
+
+/** One row of the split-tender array sent to §7.1. */
+export interface AppointmentPaymentLine {
+  paymentMethodId: string
+  /** > 0 — the API rejects anything else with 400. Decimal-safe number. */
+  amount: number
+}
+
+/**
+ * `POST /businesses/:businessId/appointments/:id/payments`
+ *
+ * Accepts either the single-method shape or a `payments` array. Each entry
+ * becomes its own `AppointmentPayment` row in one transaction, so a split
+ * tender (1000 cash + 1500 card) either fully lands or not at all.
+ * Response `data` is an array with one payment per method.
+ */
+export interface AppointmentPaymentsInput {
+  payments: AppointmentPaymentLine[]
+  reference?: string | null
+  notes?: string | null
 }
 
 // ------------------------------------------------------------------
@@ -947,6 +1025,31 @@ export interface FeedbackSubmissionResponse {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Admin — resend feedback request (proposed)                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `POST /businesses/{businessId}/appointments/{appointmentId}/feedback-request/resend`
+ *
+ * Re-mints the token and re-delivers the link. See
+ * `docs/FEEDBACK-RESEND-PROPOSAL.md` — this endpoint is not implemented yet,
+ * so the admin button surfaces the error until it ships.
+ *
+ * Only the raw token ever exists in this response; the server keeps just its
+ * SHA-256 hash.
+ */
+export interface FeedbackResendResult {
+  request_id: string
+  appointment_id: string
+  /** Absolute link including the raw token. */
+  feedback_url?: string | null
+  /** Whether the SMS gateway accepted the message. */
+  delivered?: boolean | null
+  expires_at?: string | null
+  resend_count?: number | null
+}
+
+/* ------------------------------------------------------------------ */
 /*  Admin list query                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -961,4 +1064,42 @@ export interface FeedbackListQuery {
   branch_id?: string
   category_id?: string
   is_anonymous?: boolean
+}
+
+// ============================================================
+// §7.3 Appointment receipts
+// ============================================================
+
+/**
+ * Customer-submitted proof of a bank/mobile transfer. Admin reviews it
+ * via PATCH …/receipt/verify and, on approval, a PAID AppointmentPayment
+ * is created and the appointment is atomically confirmed.
+ *
+ * Field names are camelCase (matches the admin/customer API surface,
+ * unlike the feedback *form* which is snake_case).
+ */
+export interface AppointmentReceipt {
+  id: string
+  appointmentId: string
+  businessId: string
+  paymentMethodId: string
+  /** Decimal → string. */
+  submittedAmount: string
+  receiptImageUrl: string
+  receiptImagePublicId: string
+  customerNote: string | null
+  status: ReceiptStatus
+  rejectionReason: string | null
+  submittedAt: string
+  reviewedAt: string | null
+  reviewedById: string | null
+}
+
+/** `POST /customer/appointments/:id/receipt` and the public variant. */
+export interface SubmitReceiptInput {
+  paymentMethodId: string
+  submittedAmount: number
+  receiptImageUrl: string
+  receiptImagePublicId: string
+  customerNote?: string
 }

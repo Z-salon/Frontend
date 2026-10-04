@@ -3,6 +3,7 @@
 @import 'tailwindcss';
 
 @theme {
+  /* ── Core neutrals (unchanged — shared with the admin app) ────────── */
   --color-bg: #F6F4F0;
   --color-surface: #FFFFFF;
   --color-warm: #C7B9AD;
@@ -11,12 +12,77 @@
   --color-ink-2: #4A4642;
   --color-ink-3: #8A847F;
   --color-line: #E5E0DB;
+
+  /* ── Salon accents ────────────────────────────────────────────────── */
+  /* Champagne gold: the Z-salon "luxury" note. Hairlines, eyebrows,
+     rating stars, and the wordmark flourish. Used sparingly. */
+  --color-gold: #C4A97D;
+  --color-gold-deep: #A98A5C;
+  --color-gold-soft: #F5EDE0;
+  /* Dusty blush: the "beauty" half of the brand. Very low-chroma so it
+     never tips into "overly feminine". */
+  --color-blush: #E9D8D2;
+  --color-blush-soft: #F7EFEC;
+  --color-blush-deep: #A87C70;
+  /* Warm paper — the elevated surface, one step above `bg`. */
+  --color-cream: #FBF9F6;
+
+  /* ── Muted semantic tones (never bright) ───────────────────────────── */
+  --color-ok: #4E7A5B;
+  --color-ok-soft: #EDF3EE;
+  --color-warn: #9A7734;
+  --color-warn-soft: #F7F1E3;
+  --color-bad: #A85454;
+  --color-bad-soft: #F9EDED;
+
+  /* ── Type ─────────────────────────────────────────────────────────── */
   --font-display: 'DM Serif Display', Georgia, serif;
   --font-body: 'Instrument Sans', system-ui, sans-serif;
+
+  /* ── Elevation: minimal, warm, never grey ──────────────────────────── */
+  --shadow-hairline: 0 0 0 1px rgba(28, 28, 28, 0.04);
+  --shadow-card: 0 1px 2px rgba(58, 48, 40, 0.04), 0 10px 26px -18px rgba(58, 48, 40, 0.28);
+  --shadow-lift: 0 2px 4px rgba(58, 48, 40, 0.05), 0 22px 46px -24px rgba(58, 48, 40, 0.35);
+  --shadow-float: 0 4px 8px rgba(58, 48, 40, 0.06), 0 34px 60px -28px rgba(58, 48, 40, 0.4);
+
+  /* ── Motion ───────────────────────────────────────────────────────── */
+  --animate-fade-in: fade-in 0.4s ease-out both;
+  --animate-fade-up: fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-scale-in: scale-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-sheet-in: sheet-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes fade-in {
+  from { opacity: 0 }
+  to { opacity: 1 }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px) }
+  to { opacity: 1; transform: none }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.96) }
+  to { opacity: 1; transform: none }
+}
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(24px) }
+  to { opacity: 1; transform: none }
+}
+@keyframes shimmer {
+  0%, 100% { opacity: 0.5 }
+  50% { opacity: 1 }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-html, body, #root { height: 100%; }
+html, body, #root, #customer-root { height: 100%; }
+
+html {
+  /* Anchor links in the customer landing page must clear the sticky
+     header instead of hiding underneath it. */
+  scroll-padding-top: 6rem;
+  scroll-behavior: smooth;
+}
 
 body {
   font-family: var(--font-body);
@@ -24,10 +90,55 @@ body {
   color: #1C1C1C;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 input, select, textarea, button { font-family: inherit; }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
+::selection { background: #E6D9C4; color: #1C1C1C; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #C7B9AD; border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: #C7B9AD; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #B3A294; }
+
+/* ------------------------------------------------------------------ */
+/*  Customer-app primitives                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The customer pages paint a soft champagne/blush wash over the warm
+ * paper background. Kept as a custom property so the effect inherits
+ * the tenant's brand colour when one is set.
+ */
+@utility salon-canvas {
+  background-color: var(--color-bg);
+  background-image:
+    radial-gradient(64rem 32rem at 8% -8%, color-mix(in oklab, var(--brand-primary, #1C1C1C) 7%, transparent), transparent 62%),
+    radial-gradient(52rem 28rem at 102% -4%, color-mix(in oklab, var(--color-gold) 20%, transparent), transparent 58%),
+    radial-gradient(48rem 34rem at 50% 108%, color-mix(in oklab, var(--color-blush) 45%, transparent), transparent 60%);
+}
+
+/** Consistent focus ring for every interactive element on the customer side. */
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--brand-primary, #1C1C1C);
+    outline-offset: 2px;
+  }
+}
+
+/** Hairline top edge used on the sticky customer header. */
+@utility glass-bar {
+  background: color-mix(in oklab, var(--color-bg) 82%, transparent);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+}
+
+/** Gold rule with a soft fade — used under section eyebrows. */
+@utility eyebrow-rule {
+  background: linear-gradient(
+    to right,
+    var(--brand-primary, #1C1C1C),
+    color-mix(in oklab, var(--color-gold) 70%, transparent)
+  );
+}

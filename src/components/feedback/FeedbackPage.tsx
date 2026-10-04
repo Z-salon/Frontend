@@ -59,12 +59,22 @@ interface FeedbackPageProps {
   staff?: StaffMember[]
   branches?: Branch[]
   onUpdate?: (feedback: UiFeedback[]) => void
+  /**
+   * Submission to open on arrival — set when the user clicks "View response"
+   * on a completed appointment. Fetched by id if the paginated list doesn't
+   * already contain it, then selected and its filters cleared.
+   */
+  focusSubmissionId?: string | null
+  /** Fired once the focus has been applied, so the parent can clear it. */
+  onFocusHandled?: () => void
 }
 
 export function FeedbackPage({
   staff: staffProp = [],
   branches: branchesProp = [],
   onUpdate,
+  focusSubmissionId,
+  onFocusHandled,
 }: FeedbackPageProps) {
   const toast = useToast()
   const { activeBusinessId } = useBusiness()
@@ -124,6 +134,52 @@ export function FeedbackPage({
     void refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBusinessId])
+
+  /* ---------------------------------------------------------------- */
+  /*  Deep link — open one specific submission                       */
+  /*                                                                  */
+  /*  The list is capped at 100 and sorted newest-first, so an older    */
+  /*  submission can be absent. Fetch it by id instead of silently    */
+  /*  showing nothing. Anonymous responses arrive with `appointment:  */
+  /*  null`, which `normalizeForUi` must already tolerate since the    */
+  /*  list renders them too.                                           */
+  /* ---------------------------------------------------------------- */
+
+  useEffect(() => {
+    if (!focusSubmissionId || !activeBusinessId) return
+    let cancelled = false
+
+    void (async () => {
+      try {
+        // Older submissions can fall outside the list's 100-item window,
+        // so fetch this one directly rather than showing nothing.
+        if (!submissions.some(x => x.id === focusSubmissionId)) {
+          const detail = await feedbackApi.detail(
+            activeBusinessId,
+            focusSubmissionId,
+          )
+          if (cancelled || !detail) return
+          const one = unwrapOne<FeedbackSubmission>(detail)
+          if (one) setSubmissions(prev => (prev.some(x => x.id === one.id) ? prev : [one, ...prev]))
+        }
+
+        // Filters are branch/staff-scoped; clear them so the row is visible
+        // and the detail pane doesn't look out of sync with the list.
+        setFilterStaff('all')
+        setFilterBranch('all')
+        setSelectedId(focusSubmissionId)
+      } catch (err) {
+        if (cancelled) return
+        console.warn('[feedback] focus fetch failed', err)
+        toast.error('Could not open that response.')
+      } finally {
+        if (!cancelled) onFocusHandled?.()
+      }
+    })()
+
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSubmissionId, activeBusinessId])
 
   /* ---------------------------------------------------------------- */
   /*  Fetch staff from the API when the prop is empty.               */
@@ -1022,6 +1078,17 @@ function unwrapArray<T>(res: unknown): T[] {
   if (Array.isArray(anyRes?.data?.data)) return anyRes.data.data as T[]
   if (Array.isArray(anyRes?.data)) return anyRes.data as T[]
   return []
+}
+
+/** Single-object counterpart to {@link unwrapArray}, for detail endpoints. */
+function unwrapOne<T>(res: unknown): T | null {
+  if (res && typeof res === 'object') {
+    const anyRes = res as any
+    if (anyRes.data?.data) return anyRes.data.data as T
+    if (anyRes.data) return anyRes.data as T
+    return res as T
+  }
+  return null
 }
 
 function extractErrorMessage(err: unknown, fallback = 'Something went wrong.'): string {

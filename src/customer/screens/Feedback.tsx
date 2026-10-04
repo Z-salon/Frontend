@@ -1,7 +1,26 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FeedbackFormResponse } from '../../types/api'
 import { http } from '../../api/http'
-import { Link } from '../router'
+import { useBranding } from '../hooks/useBranding'
+import { useFeedbackToken } from '../hooks/useFeedbackToken'
+import { navigate } from '../router'
+import { BrandTheme } from '../components/BrandTheme'
+import {
+  Button,
+  Card,
+  Logo,
+  MessageScreen,
+  PoweredBy,
+  RatingInput,
+  Textarea,
+} from '../components/ui'
+import {
+  IconCheck,
+  IconHeart,
+  IconSparkle,
+  IconX,
+} from '../components/icons'
+import { extractErrorMessage } from '../utils/format'
 
 type Phase = 'loading' | 'ready' | 'submitted' | 'expired' | 'already' | 'error'
 
@@ -46,12 +65,38 @@ export function Feedback({ token }: { token: string }) {
     return () => { cancelled = true }
   }, [token])
 
+  // Pull the salon's branding so this page matches the storefront the
+  // guest booked from, even though it is opened from a bare SMS link.
+  const { data: branding } = useBranding(form?.business.id ?? null)
+  const businessName = form?.business.name?.trim() || branding?.name?.trim() || 'the salon'
+
+  // Remember a working token so the confirmation page can offer one-tap
+  // feedback access next time. Only once the form has actually loaded, so
+  // an expired or already-used token is never cached.
+  const { remember } = useFeedbackToken(form?.business.id ?? null)
+  useEffect(() => {
+    if (form) remember(token, form.business.id)
+  }, [form, token, remember])
+
+  const salonHref = form ? `/book/${form.business.id}` : null
+
   function setAnswer(catId: string, patch: Partial<ResponseAnswer>) {
     setAnswers(prev => ({
       ...prev,
       [catId]: { category_id: catId, ...prev[catId], ...patch },
     }))
   }
+
+  const answeredCount = useMemo(() => {
+    if (!form) return 0
+    return form.categories.filter(cat => {
+      const a = answers[cat.id]
+      if (!a) return false
+      if (cat.type === 'RATING') return typeof a.rating_value === 'number'
+      if (cat.type === 'TEXT') return Boolean(a.text_response?.trim())
+      return typeof a.boolean_response === 'boolean'
+    }).length
+  }, [answers, form])
 
   async function submit() {
     if (!form) return
@@ -87,78 +132,131 @@ export function Feedback({ token }: { token: string }) {
 
   if (phase === 'loading') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bg">
-        <p className="text-sm text-ink-3">Loading…</p>
-      </div>
+      <BrandTheme branding={null}>
+        <div className="flex min-h-screen flex-col items-center justify-center gap-5">
+          <div className="relative flex h-16 w-16 items-center justify-center">
+            <span className="absolute inset-0 rounded-full border border-line" />
+            <span className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ink" />
+            <IconHeart className="h-5 w-5 text-ink-3" />
+          </div>
+          <p className="animate-shimmer text-sm tracking-wide text-ink-3">
+            Loading your feedback form…
+          </p>
+        </div>
+      </BrandTheme>
     )
   }
 
   if (phase === 'submitted') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-bg gap-3 px-6 text-center">
-        <h1 className="font-display text-2xl text-ink">Thanks!</h1>
-        <p className="text-sm text-ink-3 max-w-sm">
-          Your feedback helps us improve.
-        </p>
-      </div>
+      <BrandTheme branding={branding}>
+        <MessageScreen
+          tone="success"
+          eyebrow="Thank you"
+          title="That means a lot"
+          body={`${businessName} reads every response. We will use it to make the next visit even better.`}
+          actions={
+            salonHref ? (
+              <Button onClick={() => navigate(salonHref)}>Book again</Button>
+            ) : undefined
+          }
+        />
+      </BrandTheme>
     )
   }
 
   if (phase === 'expired') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-bg gap-3 px-6 text-center">
-        <h1 className="font-display text-2xl text-ink">Link expired</h1>
-        <p className="text-sm text-ink-3 max-w-sm">
-          This feedback link is no longer valid.
-        </p>
-      </div>
+      <BrandTheme branding={branding}>
+        <MessageScreen
+          tone="expired"
+          eyebrow="Link expired"
+          title="This link has timed out"
+          body="Feedback requests stay open for a week. If you still have thoughts, mention them at your next visit."
+        />
+      </BrandTheme>
     )
   }
 
   if (phase === 'already') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-bg gap-3 px-6 text-center">
-        <h1 className="font-display text-2xl text-ink">Already submitted</h1>
-        <p className="text-sm text-ink-3 max-w-sm">
-          We already have your feedback. Thanks again!
-        </p>
-      </div>
+      <BrandTheme branding={branding}>
+        <MessageScreen
+          tone="info"
+          eyebrow="All set"
+          title="You have already shared"
+          body="We have your feedback on file — no need to send it twice. Thank you."
+        />
+      </BrandTheme>
     )
   }
 
   if (phase === 'error' || !form) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-bg gap-3 px-6 text-center">
-        <h1 className="font-display text-2xl text-ink">Link unavailable</h1>
-        <p className="text-sm text-ink-3 max-w-md">
-          {error ?? 'This feedback link could not be loaded.'}
-        </p>
-      </div>
+      <BrandTheme branding={branding}>
+        <MessageScreen
+          tone="error"
+          eyebrow="Oops"
+          title="We could not load this form"
+          body={error ?? 'This feedback link could not be opened.'}
+        />
+      </BrandTheme>
     )
   }
 
-  return (
-    <div className="min-h-screen bg-bg text-ink">
-      <div className="max-w-lg mx-auto px-5 sm:px-6 py-12">
-        <h1 className="font-display text-2xl mb-1">
-          How did we do?
-        </h1>
-        <p className="text-sm text-ink-3 mb-8">
-          {form.business.name} would love your feedback.
-        </p>
+  const total = form.categories.length
+  const progress = total === 0 ? 0 : (answeredCount / total) * 100
 
-        <div className="flex flex-col gap-6">
+  return (
+    <BrandTheme branding={branding}>
+      <div className="mx-auto w-full max-w-lg px-5 py-12 sm:px-6 sm:py-16">
+        <header className="text-center">
+          <div className="flex justify-center">
+            <Logo url={branding?.logo?.url} name={businessName} size="lg" />
+          </div>
+          <p className="mt-6 text-[10px] font-semibold uppercase tracking-[0.24em] text-[color:var(--brand-accent)]">
+            <IconSparkle className="mr-1.5 inline h-3.5 w-3.5" />
+            Your visit
+          </p>
+          <h1 className="mt-3 font-display text-4xl leading-tight tracking-tight text-ink">
+            How did we do?
+          </h1>
+          <p className="mx-auto mt-3 max-w-sm text-[15px] leading-relaxed text-ink-2">
+            {businessName} would love a minute of your time. Be honest — it helps
+            more than a compliment ever could.
+          </p>
+        </header>
+
+        {total > 0 && (
+          <div className="mt-9">
+            <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-3">
+              <span>
+                {answeredCount} of {total} answered
+              </span>
+              <span className="text-[color:var(--brand-accent)]">
+                {Math.round(progress)}%
+              </span>
+            </div>
+            <div className="h-1 overflow-hidden rounded-full bg-warm-subtle">
+              <div
+                className="h-full rounded-full transition-[width] duration-500 ease-out"
+                style={{ width: `${progress}%`, background: 'var(--brand-primary)' }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="mt-7 flex flex-col gap-4">
           {form.categories.map(cat => (
-            <div
-              key={cat.id}
-              className="bg-surface rounded-2xl border border-line p-5"
-            >
-              <p className="font-medium text-ink">{cat.name}</p>
+            <Card key={cat.id}>
+              <h2 className="font-display text-xl leading-snug text-ink">{cat.name}</h2>
               {cat.description && (
-                <p className="text-sm text-ink-3 mt-1">{cat.description}</p>
+                <p className="mt-1.5 text-sm leading-relaxed text-ink-3">
+                  {cat.description}
+                </p>
               )}
 
-              <div className="mt-4">
+              <div className="mt-5">
                 {cat.type === 'RATING' && (
                   <RatingInput
                     min={cat.rating_scale_min ?? 1}
@@ -169,105 +267,103 @@ export function Feedback({ token }: { token: string }) {
                 )}
 
                 {cat.type === 'TEXT' && (
-                  <textarea
+                  <Textarea
                     value={answers[cat.id]?.text_response ?? ''}
                     onChange={e => setAnswer(cat.id, { text_response: e.target.value })}
                     rows={3}
-                    placeholder="Anything you'd like to add…"
-                    className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg text-ink placeholder:text-ink-3 focus:outline-none focus:border-warm resize-none"
+                    placeholder="Anything you would like to add…"
                   />
                 )}
 
                 {cat.type === 'BOOLEAN' && (
-                  <div className="flex gap-2">
-                    {[true, false].map(v => (
-                      <button
-                        key={String(v)}
-                        type="button"
-                        onClick={() => setAnswer(cat.id, { boolean_response: v })}
-                        className={`
-                          h-9 px-4 rounded-xl text-sm border transition-colors
-                          ${answers[cat.id]?.boolean_response === v
-                            ? 'border-ink bg-ink text-surface'
-                            : 'border-line text-ink-2 hover:border-warm'}
-                        `}
-                      >
-                        {v ? 'Yes' : 'No'}
-                      </button>
-                    ))}
+                  <div className="grid grid-cols-2 gap-2.5" role="radiogroup" aria-label={cat.name}>
+                    {[true, false].map(v => {
+                      const active = answers[cat.id]?.boolean_response === v
+                      return (
+                        <button
+                          key={String(v)}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setAnswer(cat.id, { boolean_response: v })}
+                          className={`
+                            focus-ring flex h-12 items-center justify-center gap-2 rounded-xl border
+                            text-sm font-medium transition-all duration-200
+                            ${
+                              active
+                                ? 'border-[color:var(--brand-primary)] text-[color:var(--brand-on-primary)] shadow-[0_8px_20px_-14px_rgba(var(--brand-rgb),0.9)]'
+                                : 'border-line bg-surface text-ink-2 hover:border-warm'
+                            }
+                          `}
+                          style={
+                            active
+                              ? { background: 'var(--brand-primary)' }
+                              : undefined
+                          }
+                        >
+                          {v ? (
+                            <IconCheck className="h-4 w-4" strokeWidth={2.4} />
+                          ) : (
+                            <IconX className="h-4 w-4" />
+                          )}
+                          {v ? 'Yes' : 'No'}
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
               </div>
-            </div>
+            </Card>
           ))}
         </div>
 
-        <label className="flex items-center gap-2 mt-6 cursor-pointer select-none">
+        <label
+          className={`focus-within:outline-1 mt-4 flex cursor-pointer items-start gap-3.5 rounded-2xl border p-4 transition-colors ${
+            isAnonymous
+              ? 'border-[color:var(--brand-line)] bg-[color:var(--brand-soft)]'
+              : 'border-line bg-surface hover:border-warm'
+          }`}
+        >
+          <span
+            className={`
+              mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md border transition-colors
+              ${
+                isAnonymous
+                  ? 'border-transparent text-[color:var(--brand-on-primary)]'
+                  : 'border-line text-transparent'
+              }
+            `}
+            style={isAnonymous ? { background: 'var(--brand-primary)' } : undefined}
+          >
+            <IconCheck className="h-3 w-3" strokeWidth={3} />
+          </span>
           <input
             type="checkbox"
             checked={isAnonymous}
             onChange={e => setIsAnonymous(e.target.checked)}
-            className="w-4 h-4"
+            className="sr-only"
           />
-          <span className="text-sm text-ink-2">
-            Submit anonymously
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-ink">Submit anonymously</span>
+            <span className="mt-0.5 block text-[13px] leading-relaxed text-ink-3">
+              Your name and number will not be attached to this response.
+            </span>
           </span>
         </label>
 
-        <button
-          type="button"
-          disabled={busy}
+        <Button
           onClick={submit}
-          className="mt-6 w-full h-11 rounded-xl text-sm font-medium bg-ink text-surface hover:bg-ink/90 disabled:opacity-50"
+          loading={busy}
+          fullWidth
+          className="mt-6"
         >
-          {busy ? 'Submitting…' : 'Submit feedback'}
-        </button>
+          {busy ? 'Sending…' : 'Send feedback'}
+        </Button>
 
-        <p className="text-[11px] text-ink-3 mt-6 text-center">
-          Powered by <Link to="/" className="text-ink-2 underline underline-offset-2">Z-Salon</Link>
-        </p>
+        <div className="mt-7">
+          <PoweredBy />
+        </div>
       </div>
-    </div>
+    </BrandTheme>
   )
-}
-
-function RatingInput({
-  min, max, value, onChange,
-}: {
-  min: number
-  max: number
-  value: number | undefined
-  onChange: (v: number) => void
-}) {
-  const options: number[] = []
-  for (let i = min; i <= max; i++) options.push(i)
-
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {options.map(n => (
-        <button
-          key={n}
-          type="button"
-          onClick={() => onChange(n)}
-          className={`
-            w-9 h-9 rounded-lg text-sm font-medium transition-colors
-            ${value === n
-              ? 'bg-ink text-surface'
-              : 'bg-warm-subtle text-ink-2 hover:bg-warm'}
-          `}
-        >
-          {n}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function extractErrorMessage(err: unknown, fallback: string): string {
-  const anyErr = err as any
-  const data = anyErr?.response?.data ?? anyErr?.data ?? anyErr
-  if (typeof data?.message === 'string') return data.message
-  if (Array.isArray(data?.errors) && data.errors.length > 0) return String(data.errors[0])
-  if (typeof anyErr?.message === 'string') return anyErr.message
-  return fallback
 }

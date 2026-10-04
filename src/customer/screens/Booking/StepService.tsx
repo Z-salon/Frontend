@@ -2,23 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { useBooking } from '../../context/BookingContext'
 import { servicesApi } from '../../../api/services.api'
 import type { Service } from '../../../types/api'
+import { Button, Choice, Pill, Skeleton } from '../../components/ui'
+import { StepFrame, StepNotice } from './StepFrame'
+import { IconAlert, IconArrowLeft, IconClock, IconScissors } from '../../components/icons'
+import { extractErrorMessage, formatDuration, formatPrice } from '../../utils/format'
 
-function formatPrice(price: string, currency = 'ETB'): string {
-  const n = Number(price)
-  if (!Number.isFinite(n)) return ''
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: 2,
-  }).format(n)
-}
-
-function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${minutes} min`
-  const h = Math.floor(minutes / 60)
-  const m = minutes % 60
-  return m === 0 ? `${h} hr` : `${h} hr ${m} min`
-}
 
 export function StepService() {
   // `branchId` lives on `draft`, not at the top level of the context value.
@@ -28,6 +16,7 @@ export function StepService() {
   const [services, setServices] = useState<Service[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     if (!businessId) {
@@ -49,7 +38,7 @@ export function StepService() {
         if (!cancelled) setServices(rows)
       })
       .catch(err => {
-        if (!cancelled) setError(err?.message ?? 'Failed to load services')
+        if (!cancelled) setError(extractErrorMessage(err, 'Failed to load services'))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -60,7 +49,7 @@ export function StepService() {
     }
     // Re-fetch when the branch changes — the customer may have picked a
     // different location on the previous step.
-  }, [businessId, branchId])
+  }, [businessId, branchId, attempt])
 
   // Bucket the returned services by categoryId, then join onto the
   // branding categories so display order matches the rest of the flow.
@@ -81,75 +70,150 @@ export function StepService() {
       .filter(cat => cat.services.length > 0)
   }, [branding.serviceCategories, services])
 
-  function pick(serviceId: string) {
+  function pick(svc: Service, categoryName: string) {
     updateDraft({
-      serviceId,
+      serviceId: svc.id,
+      serviceName: svc.name,
+      serviceCategoryName: categoryName,
+      serviceDurationMinutes: svc.durationMinutes,
+      servicePrice: svc.price,
+      serviceShowPrice: svc.showPriceToCustomer, 
+      serviceEmployeeAssignmentMode: svc.employeeAssignmentMode,
+      date: null,
       staffId: null,
+      staffName: null,
       slotStart: null,
       slotEnd: null,
     })
     setStep('date')
   }
 
+  const subtitle = draft.branchName
+    ? `Available at ${draft.branchName}. Choose a service to see open times.`
+    : 'Choose a service to see open times.'
+
+  if (loading) {
+    return (
+      <StepFrame title="What can we do for you?" subtitle={subtitle}>
+        <div className="flex flex-col gap-6">
+          {[0, 1].map(g => (
+            <div key={g}>
+              <Skeleton className="mb-3 h-3 w-28" />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {[0, 1, 2, 3].map(i => (
+                  <Skeleton key={i} className="h-[5.5rem]" />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </StepFrame>
+    )
+  }
+
+  if (error) {
+    return (
+      <StepFrame
+        title="We couldn't load the menu"
+        subtitle="The service list did not come through. Check your connection and try again."
+      >
+        <StepNotice
+          icon={<IconAlert className="h-6 w-6" />}
+          title="Services unavailable"
+          body={error}
+          action={
+            <Button onClick={() => setAttempt(a => a + 1)}>Try again</Button>
+          }
+        />
+        <div className="mt-6">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setStep('branch')}
+            iconLeft={<IconArrowLeft className="h-3.5 w-3.5" />}
+          >
+            Change location
+          </Button>
+        </div>
+      </StepFrame>
+    )
+  }
+
+  if (grouped.length === 0) {
+    return (
+      <StepFrame title="Nothing on the menu yet" subtitle={subtitle}>
+        <StepNotice
+          icon={<IconScissors className="h-6 w-6" />}
+          title="No services available here"
+          body={`This branch has no active services published yet.${
+            draft.branchName ? ` Try another location, or call ${draft.branchName} directly.` : ''
+          }`}
+          action={<Button onClick={() => setStep('branch')}>Choose another location</Button>}
+        />
+      </StepFrame>
+    )
+  }
+
   return (
-    <section>
-      <h2 className="font-display text-2xl mb-1">What can we do for you?</h2>
-      <p className="text-sm text-ink-3 mb-6">
-        Choose a service to see available times.
-      </p>
-
-      {loading && <p className="text-sm text-ink-3">Loading services…</p>}
-
-      {error && !loading && (
-        <p className="text-sm text-red-600">Couldn’t load services.</p>
-      )}
-
-      {!loading && !error && grouped.length === 0 && (
-        <p className="text-sm text-ink-3">
-          No services are available at this branch yet.
-        </p>
-      )}
-
-      <div className="flex flex-col gap-6">
+    <StepFrame
+      title="What can we do for you?"
+      subtitle={subtitle}
+    >
+      <div className="flex flex-col gap-8">
         {grouped.map(cat => (
           <div key={cat.id}>
-            <h3 className="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-3">
+            <h2 className="mb-3 flex items-center gap-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-ink-3">
+              <span
+                className="h-px w-5 bg-[color:var(--brand-line)]"
+                aria-hidden="true"
+              />
               {cat.name}
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            </h2>
+
+            <div
+              className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+              role="radiogroup"
+              aria-label={cat.name}
+            >
               {cat.services.map(svc => (
-                <button
+                <Choice
                   key={svc.id}
-                  type="button"
-                  onClick={() => pick(svc.id)}
-                  className="text-left rounded-lg border border-ink-4/20 hover:border-ink-3 hover:bg-ink-4/5 transition-colors p-4"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-medium text-ink-1 truncate">
-                        {svc.name}
-                      </p>
-                      {svc.description && (
-                        <p className="text-xs text-ink-3 mt-0.5 line-clamp-2">
-                          {svc.description}
-                        </p>
+                  selected={draft.serviceId === svc.id}
+                  onSelect={() => pick(svc, cat.name)}
+                  title={svc.name}
+                  subtitle={svc.description ?? undefined}
+                  meta={
+                    <>
+                      {svc.durationMinutes > 0 && (
+                        <Pill>
+                          <IconClock className="h-3 w-3" />
+                          {formatDuration(svc.durationMinutes)}
+                        </Pill>
                       )}
-                      <p className="text-xs text-ink-3 mt-1">
-                        {formatDuration(svc.durationMinutes)}
-                      </p>
-                    </div>
-                    {svc.showPriceToCustomer && (
-                      <span className="text-sm font-medium text-ink-1 whitespace-nowrap">
-                        {formatPrice(svc.price)}
-                      </span>
-                    )}
-                  </div>
-                </button>
+                      {svc.showPriceToCustomer && (
+                        <Pill tone="brand">
+                          {formatPrice(svc.price, branding.currency)}
+                        </Pill>
+                      )}
+                    </>
+                  }
+                />
               ))}
             </div>
           </div>
         ))}
       </div>
-    </section>
+
+      <div className="mt-8">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setStep('branch')}
+          iconLeft={<IconArrowLeft className="h-3.5 w-3.5" />}
+        >
+          Change location
+        </Button>
+      </div>
+    </StepFrame>
   )
 }

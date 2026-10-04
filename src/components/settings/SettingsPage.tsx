@@ -13,6 +13,7 @@ import { businessApi } from '../../api/business.api'
 import { bookingConfigApi } from '../../api/booking-config.api'
 import { useBusiness } from '../../contexts/BusinessContext'
 import { useBranch } from '../../contexts/BranchContext'
+import { SampleWorkSettings } from './SampleWorkSettings'
 
 interface SettingsPageProps {
   settings: AppSettings
@@ -57,6 +58,41 @@ function publicBookUrl(businessId: string): string {
   const origin =
     typeof window !== 'undefined' ? window.location.origin : ''
   return `${origin}/book/${businessId}`
+}
+
+/* ------------------------------------------------------------------ */
+/*  Branding input normalisers                                         */
+/*                                                                     */
+/*  The backend schema for PATCH /businesses/:id/branding is .strict() */
+/*  and validates: colours as #RGB or #RRGGBB, all URL fields as real  */
+/*  URLs. The form lets the user type freely, so we repair common      */
+/*  mistakes (missing #, missing scheme) here rather than letting the  */
+/*  request 400.                                                       */
+/* ------------------------------------------------------------------ */
+
+const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
+
+/** Normalise a user-typed colour to `#RGB`/`#RRGGBB`, or `null` to clear. */
+function safeHex(v: string): string | null {
+  const t = v.trim()
+  if (!t) return null
+  if (HEX_RE.test(t)) return t.toUpperCase()
+  const withHash = t.startsWith('#') ? t : `#${t}`
+  if (HEX_RE.test(withHash)) return withHash.toUpperCase()
+  return null
+}
+
+/** Normalise a user-typed URL; prepend https:// if a scheme is missing. */
+function safeUrl(v: string): string | null {
+  const t = v.trim()
+  if (!t) return null
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`
+  try {
+    // Will throw on invalid hostnames / malformed URLs.
+    return new URL(withScheme).toString()
+  } catch {
+    return null
+  }
 }
 
 export function SettingsPage({
@@ -188,10 +224,8 @@ export function SettingsPage({
           <FinanceSettings
             settings={settings}
             expenseCategories={expenseCategories}
-            paymentMethods={paymentMethods}
             onUpdate={onUpdateSettings}
             onUpdateCategories={onUpdateCategories}
-            onUpdatePaymentMethods={onUpdatePaymentMethods}
           />
         )}
 
@@ -488,16 +522,20 @@ function BrandingSettings({
     setError(null)
     setSaving(true)
     try {
+      // Normalise before sending — the backend schema is .strict() and
+      // validates hex colours + real URLs. `safeHex` returns null for
+      // unparseable input (which clears the colour); `safeUrl` prepends
+      // https:// so bare domains like `facebook.com/salon` pass.
       await businessApi.updateBranding(businessId, {
         description:    trimmedOrNull(description),
         aboutUs:        trimmedOrNull(aboutUs),
-        primaryColor:   primary   || null,
-        secondaryColor: secondary || null,
-        website:        trimmedOrNull(website),
-        facebookUrl:    trimmedOrNull(facebook),
-        instagramUrl:   trimmedOrNull(instagram),
-        telegramUrl:    trimmedOrNull(telegram),
-        tiktokUrl:      trimmedOrNull(tiktok),
+        primaryColor:   safeHex(primary),
+        secondaryColor: safeHex(secondary),
+        website:        safeUrl(website),
+        facebookUrl:    safeUrl(facebook),
+        instagramUrl:   safeUrl(instagram),
+        telegramUrl:    safeUrl(telegram),
+        tiktokUrl:      safeUrl(tiktok),
       } as any)
       const fresh = await businessApi.branding(businessId)
       onSaved(fresh)
@@ -515,6 +553,7 @@ function BrandingSettings({
   const logoUrl = readLogoUrl(branding)
 
   return (
+    <>
     <Section title="Branding" description="Manage your salon's visual identity.">
       <div className="max-w-md flex flex-col gap-6">
         {loading && <p className="text-xs text-ink-3">Loading…</p>}
@@ -637,6 +676,15 @@ function BrandingSettings({
         />
       </div>
     </Section>
+
+    {/* Portfolio photos are saved per item against the API rather than
+        through the branding payload, so this sits outside the Section's
+        single save bar — and outside its max-w-md measure, since the grid
+        needs the width. */}
+    <div className="mt-8 sm:mt-10">
+      <SampleWorkSettings businessId={businessId} />
+    </div>
+    </>
   )
 }
 
@@ -997,23 +1045,18 @@ function BookingSettings() {
 /*  Section: Finance                                                   */
 /* ------------------------------------------------------------------ */
 
-function FinanceSettings({ settings, expenseCategories, paymentMethods, onUpdate, onUpdateCategories, onUpdatePaymentMethods }: {
+function FinanceSettings({ settings, expenseCategories, onUpdate, onUpdateCategories }: {
   settings: AppSettings
   expenseCategories: ExpenseCategory[]
-  paymentMethods: PaymentMethod[]
   onUpdate: (s: AppSettings) => void
   onUpdateCategories: (c: ExpenseCategory[]) => void
-  onUpdatePaymentMethods: (p: PaymentMethod[]) => void
 }) {
   const [cats, setCats]       = useState(expenseCategories)
-  const [methods, setMethods] = useState(paymentMethods)
   const [newCat,  setNewCat]  = useState('')
-  const [newPm,   setNewPm]   = useState('')
   const [saved,   setSaved]   = useState(false)
 
   function save() {
     onUpdateCategories(cats)
-    onUpdatePaymentMethods(methods)
     setSaved(true)
     setTimeout(() => setSaved(false), 2500)
   }
@@ -1031,33 +1074,12 @@ function FinanceSettings({ settings, expenseCategories, paymentMethods, onUpdate
 
         <div>
           <p className="text-sm font-semibold text-ink mb-3">Payment methods</p>
-          <div className="flex flex-col gap-1.5 mb-3">
-            {methods.map(m => (
-              <div key={m.id} className="flex items-center justify-between px-3 py-2.5 bg-bg rounded-xl">
-                <span className={`text-sm ${m.active ? 'text-ink' : 'text-ink-3 line-through'}`}>{m.name}</span>
-                <div className="flex items-center gap-2">
-                  <span className={`text-[10px] ${m.active ? 'text-[#2A6139]' : 'text-ink-3'}`}>{m.active ? 'Active' : 'Inactive'}</span>
-                  <Toggle checked={m.active} onChange={v => setMethods(prev => prev.map(p => p.id === m.id ? { ...p, active: v } : p))} />
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input value={newPm} onChange={e => setNewPm(e.target.value)} placeholder="Add payment method"
-              className="flex-1 px-3 py-2 rounded-xl border border-line text-sm bg-bg focus:outline-none focus:border-warm"
-              onKeyDown={e => {
-                if (e.key === 'Enter' && newPm.trim()) {
-                  setMethods(prev => [...prev, { id: `pm${Date.now()}`, name: newPm.trim(), active: true }])
-                  setNewPm('')
-                }
-              }}
-            />
-            <Button size="sm" onClick={() => {
-              if (!newPm.trim()) return
-              setMethods(prev => [...prev, { id: `pm${Date.now()}`, name: newPm.trim(), active: true }])
-              setNewPm('')
-            }}>Add</Button>
-          </div>
+          <p className="text-xs text-ink-3 bg-bg px-3 py-2.5 rounded-lg">
+            Cash, mobile money, card, and bank transfer are managed in{' '}
+            <span className="font-medium text-ink">Finance → Payment methods</span>.
+            They are read by the real API, so they must be added there before any
+            appointment payment can be recorded.
+          </p>
         </div>
 
         <div>
