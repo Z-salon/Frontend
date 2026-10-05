@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -9,7 +10,8 @@ import {
 } from 'react';
 import { configureHttp, runRefresh } from '../api/http';
 import { authApi } from '../api/auth.api';
-import { isNetworkError } from '../api/errors';
+import { ApiError, isNetworkError } from '../api/errors';
+import { getJwtExpiryMs, isJwtExpiredOrNear } from '../lib/jwt';
 import { useToast } from '../components/ui/Toast';
 import type { MeResponse } from '../types/api';
 
@@ -84,11 +86,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus('authenticated');
       return me;
     } catch (err) {
-      if (isNetworkError(err)) toast.error('Network Error');
-      clearSession();
+      if (isNetworkError(err)) {
+        toast.error('Network Error');
+        return null;
+      }
+      if (
+        err instanceof ApiError &&
+        (err.isAuthError ||
+          err.code === 'SESSION_EXPIRED' ||
+          err.code === 'SESSION_REVOKED' ||
+          err.code === 'TOKEN_EXPIRED' ||
+          err.code === 'INVALID_TOKEN')
+      ) {
+        clearSession();
+      }
       return null;
     }
-  }, [clearSession]);
+  }, [clearSession, toast]);
 
   /**
    * §2.12 — POST /auth/refresh. Cookie-only, no Bearer header.
@@ -143,13 +157,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * refresh() — the single-flight logic in http.ts ensures concurrent 401s
    * trigger only one /auth/refresh call.
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     configureHttp({
       getAccessToken: () => tokenRef.current,
       refreshAccessToken: refresh,
       onUnauthorized: clearSession,
     });
   }, [refresh, clearSession]);
+
+  /** Refresh shortly before JWT exp; recover when the tab wakes with a stale token. */
+  useEffect(() => {
+    if (status !== 'authenticated' || !accessToken) return;
+
+    const REFRESH_BEFORE_MS = 60_000;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const schedule = (token: string) => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      const expMs = getJwtExpiryMs(token);
+      if (expMs === null) return;
+
+      const delay = Math.max(0, expMs - REFRESH_BEFORE_MS - Date.now());
+      timeoutId = setTimeout(() => {
+        void (async () => {
+          const next = await refresh();
+          if (!next) {
+            clearSession();
+            return;
+          }
+          schedule(next);
+        })();
+      }, delay);
+    };
+
+    schedule(accessToken);
+
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      const token = tokenRef.current;
+      if (!token) return;
+      if (!isJwtExpiredOrNear(token, REFRESH_BEFORE_MS)) return;
+      void refresh().then((next) => {
+        if (!next) clearSession();
+        else schedule(next);
+      });
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [status, accessToken, refresh, clearSession]);
 
   /**
    * Boot restore. Two phases:

@@ -159,12 +159,15 @@ export async function request<T = unknown>(
 ): Promise<T> {
   let { res, body } = await perform(path, opts);
 
-  if (res.status === 401 && !opts.skipRefresh && opts.auth !== false) {
-    const newToken = await runRefresh();
+  if (res.status === 401 && opts.auth !== false) {
+    if (!opts.skipRefresh) {
+      const newToken = await runRefresh();
+      if (newToken) {
+        ({ res, body } = await perform(path, { ...opts, skipRefresh: true }));
+      }
+    }
 
-    if (newToken) {
-      ({ res, body } = await perform(path, { ...opts, skipRefresh: true }));
-    } else {
+    if (res.status === 401) {
       onUnauthorized();
     }
   }

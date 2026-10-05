@@ -52,6 +52,10 @@ import {
   paymentMethods as initialPayMethods,
   defaultAppSettings,
 } from "./data/mock"
+import {
+  clearPendingOwnerOnboarding,
+  isPendingOwnerOnboarding,
+} from "./lib/onboarding"
 
 /* ------------------------------------------------------------------ */
 /*  Onboarding helper                                                  */
@@ -139,6 +143,13 @@ export default function App() {
     if (!user) return
 
     const key = onboardingKey(user.id)
+    const pendingOwnerSetup = isPendingOwnerOnboarding(user.id)
+
+    if (pendingOwnerSetup) {
+      setOnboarded(false)
+      setSetupResolved(true)
+      return
+    }
 
     if (localStorage.getItem(key) === "1") {
       setOnboarded(true)
@@ -420,6 +431,7 @@ export default function App() {
 
   function handleOnboardingComplete() {
     if (user) localStorage.setItem(onboardingKey(user.id), "1")
+    clearPendingOwnerOnboarding()
     setOnboarded(true)
   }
 

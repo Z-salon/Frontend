@@ -4,6 +4,7 @@ import { Button, Input } from "../ui"
 import { useToast } from "../ui/Toast"
 import { authApi } from "../../api/auth.api"
 import { useAuth } from "../../hooks/useAuth"
+import { markPendingOwnerOnboarding } from "../../lib/onboarding"
 
 interface AuthProps {
   screen: AuthScreenType
@@ -844,9 +845,8 @@ function VerifyScreen({
     try {
       const res = await authApi.registerVerify(phone, code)
       console.log("[auth] registerVerify response:", unwrapResponse(res))
-      // Register/verify completes onboarding + logs the user in, so persist
-      // the token in AuthContext before signalling completion.
       await login(res.accessToken)
+      markPendingOwnerOnboarding(res.user.id)
       toast.success("Phone verified")
       onVerified()
     } catch (err) {
