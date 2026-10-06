@@ -3,6 +3,7 @@
 import { http } from './http'
 import type {
   Appointment,
+  AppointmentListResult,
   AppointmentStatus,
   AppointmentStatusHistoryEntry,
   BookingSource,
@@ -110,7 +111,10 @@ export const appointmentsApi = {
     if (query?.page  != null) qs.set('page',  String(query.page))
     if (query?.limit != null) qs.set('limit', String(query.limit))
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
-    return http.get<Appointment[]>(
+    // The list envelope nests the array: `data: { data: [...], meta }`.
+    // `http.get` unwraps the outer `data`, so the caller receives
+    // `{ data: Appointment[], meta }`.
+    return http.get<AppointmentListResult>(
       `/businesses/${businessId}/appointments${suffix}`,
     )
   },

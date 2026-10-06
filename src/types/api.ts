@@ -631,7 +631,11 @@ export interface Customer {
 // Enum reference (§12)
 // ============================================================
 
-export type RefundRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type RefundRequestStatus =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'COMPLETED';
 export type PaymentStatus = 'PAID' | 'VOIDED';
 export type ReceiptStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 export type CustomerConfirmationStatus =
@@ -1211,6 +1215,18 @@ export interface PaginationMeta {
   totalPages: number
 }
 
+/**
+ * `GET /businesses/{businessId}/appointments`
+ *
+ * The list envelope nests the collection: the raw body is
+ * `{ success, message, data: { data: Appointment[], meta } }`.
+ * `http` unwraps the outer `data`, so callers receive `{ data, meta }`.
+ */
+export interface AppointmentListResult {
+  data: Appointment[]
+  meta: PaginationMeta | null
+}
+
 /** `GET /businesses/{businessId}/expenses` query — `page`/`limit` match §5.3. */
 export type ExpenseListQuery = {
   /** ISO date or datetime; date-only spans whole days (business timezone). */
@@ -1262,4 +1278,360 @@ export interface RecordExpensePaymentRequest {
 /** `POST /businesses/{businessId}/expenses/:expenseId/void` */
 export interface VoidExpenseRequest {
   reason: string
+}
+
+// ============================================================
+// Finance reporting (Overview / Reports / Outstanding)
+// ============================================================
+
+/**
+ * Common Finance Report query.
+ *
+ * `from`/`to` are ISO date or datetime; a date-only value spans the whole
+ * day in the business timezone. Omit `branchId` (undefined) for "all
+ * branches" — never send a branch name where a UUID is expected.
+ */
+export type FinanceReportQuery = {
+  from?: string
+  to?: string
+  branchId?: string
+}
+
+/** The authoritative period echoed by every report. */
+export interface FinancePeriod {
+  from: string | null
+  to: string | null
+  timezone: string
+}
+
+export interface FinanceFilterInfo {
+  branchId: string | null
+  /** `summary` reports it; other endpoints may omit it. */
+  allBranches?: boolean
+}
+
+/* ---- Summary -------------------------------------------------------- */
+
+export interface FinanceSummaryTotals {
+  totalRevenue: string
+  totalPaymentsCollected: string
+  totalRefunds: string
+  totalOutstanding: string
+  totalExpenses: string
+  totalExpensesPaid: string
+  totalExpensesUnpaid: string
+  netOperatingResult: string
+  netCashMovement: string
+  revenueBasis: string
+  transactionCount: number
+  appointmentCount: number
+  expenseCount: number
+}
+
+export interface FinanceBranchSummaryRow {
+  branchId: string
+  branchName: string
+  revenue: string
+  collected: string
+  refunds: string
+  expenses: string
+  expensesPaid: string
+  netOperatingResult: string
+}
+
+export interface FinanceServiceRow {
+  serviceId: string
+  serviceName: string
+  amount: string
+  count: number
+}
+
+export interface FinancePaymentMethodRow {
+  paymentMethodId: string
+  paymentMethodName: string
+  paymentMethodType: string
+  amount: string
+  count: number
+}
+
+export interface FinanceExpenseCategoryRow {
+  categoryId: string
+  categoryName: string
+  amount: string
+  amountPaid: string
+  count: number
+}
+
+/** One day of a report's `byDate` breakdown. Only the fields the endpoint
+ *  actually returns for that report are populated. */
+export interface FinanceDateRow {
+  date: string
+  revenue?: string
+  collected?: string
+  refunds?: string
+  expenses?: string
+  expensesPaid?: string
+}
+
+export interface FinanceSummaryReport {
+  period: FinancePeriod
+  filters: FinanceFilterInfo
+  summary: FinanceSummaryTotals
+  breakdowns: {
+    byBranch: FinanceBranchSummaryRow[]
+    byService: FinanceServiceRow[]
+    byPaymentMethod: FinancePaymentMethodRow[]
+    byExpenseCategory: FinanceExpenseCategoryRow[]
+    byDate: FinanceDateRow[]
+  }
+}
+
+/* ---- Revenue -------------------------------------------------------- */
+
+export interface FinanceRevenueReport {
+  period: FinancePeriod
+  filters: FinanceFilterInfo
+  totalRevenue: string
+  appointmentCount: number
+  breakdowns: {
+    byBranch: Array<{
+      branchId: string
+      branchName: string
+      revenue: string
+      count: number
+    }>
+    byService: FinanceServiceRow[]
+    byDate: Array<{ date: string; revenue: string }>
+  }
+}
+
+/* ---- Collections ---------------------------------------------------- */
+
+export interface FinanceCollectionReport {
+  period: FinancePeriod
+  filters: FinanceFilterInfo
+  totalCollected: string
+  totalRefunds: string
+  netCollected: string
+  transactionCount: number
+  breakdowns: {
+    byPaymentMethod: FinancePaymentMethodRow[]
+    byBranch: Array<{
+      branchId: string
+      branchName: string
+      collected: string
+      refunds: string
+    }>
+    byRecordedBy: Array<{
+      recordedById: string
+      recordedByPhone: string
+      amount: string
+      count: number
+    }>
+    byDate: Array<{ date: string; collected: string }>
+  }
+}
+
+/* ---- Refunds -------------------------------------------------------- */
+
+export interface FinanceRefundStatusRow {
+  status: string
+  count: number
+  amount?: string
+  requestedAmount?: string
+  approvedAmount?: string
+  completedAmount?: string
+  rejectedAmount?: string
+}
+
+/**
+ * `byStatus` is documented/observed in two shapes:
+ *   · an array of rows (`[{ status, count, … }]`)
+ *   · a keyed object (`{ PENDING: { count, amount }, … }`)
+ * The UI normalizes either into `FinanceRefundStatusRow[]` before rendering.
+ */
+export type FinanceRefundStatusBreakdown =
+  | FinanceRefundStatusRow[]
+  | Record<string, Partial<FinanceRefundStatusRow>>
+
+export interface FinanceRefundBranchRow {
+  branchId: string
+  branchName: string
+  amount: string
+  count: number
+}
+
+/**
+ * Refund report. The OpenAPI spec does not publish the payload schema, so the
+ * optional fields below cover both the flat and `breakdowns`-nested shapes the
+ * endpoint may return; the UI reads whichever is present.
+ */
+export interface FinanceRefundReport {
+  period?: FinancePeriod
+  filters?: FinanceFilterInfo
+  totalRefunds?: string
+  refundCount?: number
+  completedRefundAmount?: string
+  completedRefundCount?: number
+  byStatus?: FinanceRefundStatusBreakdown
+  byBranch?: FinanceRefundBranchRow[]
+  breakdowns?: {
+    byStatus?: FinanceRefundStatusBreakdown
+    byBranch?: FinanceRefundBranchRow[]
+  }
+}
+
+/* ---- Expenses report ------------------------------------------------ */
+
+export interface FinanceExpenseReport {
+  period: FinancePeriod
+  filters: FinanceFilterInfo
+  totalExpenses: string
+  totalExpensesPaid: string
+  totalExpensesUnpaid: string
+  expenseCount: number
+  breakdowns: {
+    byCategory: FinanceExpenseCategoryRow[]
+    byBranch: Array<{
+      branchId: string
+      branchName: string
+      amount: string
+      amountPaid: string
+    }>
+    byDate: Array<{ date: string; expenses: string; expensesPaid: string }>
+  }
+}
+
+/* ---- Outstanding ---------------------------------------------------- */
+
+export interface FinanceOutstandingAppointment {
+  appointmentId: string
+  branchId?: string | null
+  branchName?: string | null
+  customerId?: string | null
+  customerName?: string | null
+  customerPhone?: string | null
+  scheduledStart?: string | null
+  status?: string | null
+  originalAmount?: string
+  finalAgreedAmount?: string
+  verifiedPaid?: string
+  outstanding: string
+}
+
+export interface FinanceOutstandingReport {
+  asOf?: string
+  filters?: FinanceFilterInfo
+  totalOutstanding: string
+  appointments: FinanceOutstandingAppointment[]
+  meta?: PaginationMeta | null
+}
+
+/** `GET /businesses/{businessId}/finance/outstanding` query. */
+export type FinanceOutstandingQuery = {
+  branchId?: string
+  page?: number
+  limit?: number
+}
+
+/* ------------------------------------------------------------------ */
+/*  §8 Refund requests (operational queue)                             */
+/*                                                                     */
+/*  These are the `/refund-requests` workflow endpoints, distinct from */
+/*  the read-only `/finance/refunds` reporting endpoint. All money     */
+/*  values are decimal strings straight from the server.               */
+/* ------------------------------------------------------------------ */
+
+export interface RefundRequestCustomer {
+  id: string
+  firstName: string
+  lastName: string
+  phone?: string | null
+}
+
+export interface RefundRequestAppointment {
+  id: string
+  scheduledStart?: string | null
+  branchId?: string | null
+  customer?: RefundRequestCustomer | null
+}
+
+/** The actor recorded on a review/completion (id + phone). */
+export interface RefundRequestActor {
+  id: string
+  phone?: string | null
+}
+
+export interface RefundRequest {
+  id: string
+  appointmentId: string
+  paymentId?: string | null
+  requestedAmount: string
+  /** Server-provided; `null` until the request is approved. */
+  approvedAmount?: string | null
+  status: RefundRequestStatus
+  reason?: string | null
+  rejectionReason?: string | null
+  requestedAt: string
+  reviewedAt?: string | null
+  reviewedBy?: RefundRequestActor | null
+  completedAt?: string | null
+  completedBy?: RefundRequestActor | null
+  /** Amount actually paid out, present once completed. */
+  completedAmount?: string | null
+  reference?: string | null
+  note?: string | null
+  appointment?: RefundRequestAppointment | null
+}
+
+/** `GET /businesses/{businessId}/refund-requests` query. */
+export type RefundRequestListQuery = {
+  status?: RefundRequestStatus
+  page?: number
+  limit?: number
+}
+
+export interface RefundRequestListResult {
+  data: RefundRequest[]
+  meta: PaginationMeta | null
+}
+
+/**
+ * `GET /businesses/{businessId}/appointments/{appointmentId}/refundable`
+ *
+ * The server owns every amount. `refundable` is the ceiling for a new
+ * refund request; the client never derives it.
+ */
+export interface RefundableAppointment {
+  appointmentId: string
+  originalAmount: string
+  finalAgreedAmount: string
+  finalized: boolean
+  verifiedPaid: string
+  outstanding: string
+  refunded: string
+  refundReserved: string
+  refundable: string
+  policyType: string
+  refundPercentage: number
+}
+
+/** `POST /businesses/{businessId}/refund-requests` body. */
+export interface CreateRefundRequestInput {
+  appointmentId: string
+  amount: number
+  paymentId: string
+  reason: string
+}
+
+/** `POST /businesses/{businessId}/refund-requests/:id/reject` body. */
+export interface RejectRefundRequestInput {
+  rejectionReason: string
+}
+
+/** `POST /businesses/{businessId}/refund-requests/:id/complete` body. */
+export interface CompleteRefundRequestInput {
+  amount: number
+  reference: string
+  note?: string
 }

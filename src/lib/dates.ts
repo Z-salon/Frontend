@@ -33,3 +33,17 @@ export function formatExpenseDate(iso: string | null | undefined): string {
     year: 'numeric',
   })
 }
+
+/** ISO datetime → "Oct 05, 2026, 10:00 AM" (audit timestamps). */
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}

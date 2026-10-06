@@ -8,6 +8,11 @@ import { FinancePaymentsTab } from './FinancePaymentsTab'
 import { FinancePaymentMethodsTab } from './FinancePaymentMethodsTab'
 import { ExpenseCategoriesTab } from './ExpenseCategoriesTab'
 import { ExpenseLedgerTab } from './ExpenseLedgerTab'
+import { FinanceOverviewTab } from './FinanceOverviewTab'
+import { FinanceOutstandingTab } from './FinanceOutstandingTab'
+import { FinanceRefundsTab } from './FinanceRefundsTab'
+import { FinanceReportsTab } from './FinanceReportsTab'
+import { resolveFinanceRange, type FinanceDatePreset } from '../../lib/financeDate'
 
 type FinanceTab =
   | 'overview'
@@ -17,6 +22,7 @@ type FinanceTab =
   | 'transactions'
   | 'expenses'
   | 'outstanding'
+  | 'refunds'
   | 'reports'
 
 interface FinancePageProps {
@@ -26,8 +32,7 @@ interface FinancePageProps {
   onUpdateTransactions: (t: Transaction[]) => void
   onUpdateCustomers: (c: Customer[]) => void
   onNavigateToCustomer?: (customerId: string) => void
-  /** Real business id — the Payments, Payment methods and Categories tabs
-   *  talk to the API directly. */
+  /** Real business id — the Finance tabs talk to the API directly. */
   businessId?: string
 }
 
@@ -38,10 +43,10 @@ export function FinancePage({
 }: FinancePageProps) {
   const [tab, setTab] = useState<FinanceTab>('overview')
 
-  // Real branches for the Payments tab filter. The transactions/expenses
-  // ledgers here still run on seeded mock data; expense categories load from
-  // the API in the Categories tab.
-  const { activeBusinessId } = useBusiness()
+  // Real branches drive the branch filter; the API needs the branch UUID,
+  // never a name. The business timezone is used for date-range day boundaries
+  // so "today" is the business day, not the browser's.
+  const { activeBusinessId, activeMembership } = useBusiness()
   const { branches: branchCtx } = useBranch()
   const branchList = useMemo(
     () =>
@@ -50,8 +55,18 @@ export function FinancePage({
         .map(b => ({ id: b.id, name: b.name })),
     [branchCtx],
   )
+  const timeZone =
+    activeMembership?.business?.timezone || branchCtx[0]?.timezone || undefined
+
   const [filterBranch, setFilterBranch] = useState('all')
-  const [filterDate,   setFilterDate]   = useState<'today' | 'week' | 'month' | 'all'>('month')
+  const [filterDate, setFilterDate] = useState<FinanceDatePreset>('month')
+
+  /* UUID for the API; `undefined` == "all branches". */
+  const apiBranchId = filterBranch === 'all' ? undefined : filterBranch
+  const range = useMemo(
+    () => resolveFinanceRange(filterDate, timeZone),
+    [filterDate, timeZone],
+  )
 
   const TABS: { id: FinanceTab; label: string }[] = [
     { id: 'overview',      label: 'Overview'      },
@@ -61,12 +76,20 @@ export function FinancePage({
     { id: 'transactions',  label: 'Transactions'  },
     { id: 'expenses',      label: 'Expenses'      },
     { id: 'outstanding',   label: 'Outstanding'   },
+    { id: 'refunds',       label: 'Refunds'       },
     { id: 'reports',       label: 'Reports'       },
   ]
 
+  // The legacy mock Transaction ledger (Transactions tab only) filters by
+  // branch name, so selecting a real branch keeps that tab working.
+  const selectedBranchName =
+    filterBranch === 'all'
+      ? null
+      : branchList.find(b => b.id === filterBranch)?.name ?? null
+
   function filterTx(tx: Transaction[]) {
     return tx.filter(t => {
-      if (filterBranch !== 'all' && t.branchId !== filterBranch) return false
+      if (selectedBranchName && t.branchName !== selectedBranchName) return false
       if (filterDate === 'today') return t.date === today()
       if (filterDate === 'week')  return t.date >= weekAgo()
       if (filterDate === 'month') return t.date >= monthAgo()
@@ -75,9 +98,6 @@ export function FinancePage({
   }
 
   const filtered = filterTx(transactions)
-  const revenue  = filtered.filter(t => t.type === 'revenue').reduce((s, t) => s + (t.amountPaid ?? t.amount), 0)
-  const expenses = filtered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
-  const outstanding = customers.reduce((s, c) => s + (c.outstandingBalance ?? 0), 0)
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -98,8 +118,9 @@ export function FinancePage({
           <select value={filterBranch} onChange={e => setFilterBranch(e.target.value)}
             className="h-8 px-2.5 rounded-xl border border-line text-xs bg-bg text-ink focus:outline-none cursor-pointer">
             <option value="all">All branches</option>
-            <option value="b1">Bole</option>
-            <option value="b2">Kazanchis</option>
+            {branchList.map(b => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
           </select>
           {(['today','week','month','all'] as const).map(d => (
             <button key={d} onClick={() => setFilterDate(d)}
@@ -123,7 +144,11 @@ export function FinancePage({
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-8 py-6">
         {tab === 'overview' && (
-          <OverviewTab filtered={filtered} revenue={revenue} expenses={expenses} outstanding={outstanding} />
+          <FinanceOverviewTab
+            businessId={businessId ?? activeBusinessId ?? undefined}
+            branchId={apiBranchId}
+            range={range}
+          />
         )}
         {tab === 'transactions' && (
           <TransactionsTab
@@ -141,17 +166,25 @@ export function FinancePage({
           />
         )}
         {tab === 'outstanding' && (
-          <OutstandingTab
-            customers={customers}
-            paymentMethods={paymentMethods}
-            onUpdateCustomers={onUpdateCustomers}
-            onUpdateTransactions={onUpdateTransactions}
-            transactions={transactions}
+          <FinanceOutstandingTab
+            businessId={businessId ?? activeBusinessId ?? undefined}
+            branchId={apiBranchId}
             onNavigateToCustomer={onNavigateToCustomer}
           />
         )}
+        {tab === 'refunds' && (
+          <FinanceRefundsTab
+            businessId={businessId ?? activeBusinessId ?? undefined}
+            branches={branchList}
+          />
+        )}
         {tab === 'reports' && (
-          <ReportsTab transactions={transactions} />
+          <FinanceReportsTab
+            businessId={businessId ?? activeBusinessId ?? undefined}
+            branchId={apiBranchId}
+            range={range}
+            timeZone={timeZone}
+          />
         )}
         {tab === 'payments' && (
           <FinancePaymentsTab
@@ -166,54 +199,6 @@ export function FinancePage({
           <ExpenseCategoriesTab businessId={businessId ?? activeBusinessId ?? undefined} />
         )}
       </div>
-    </div>
-  )
-}
-
-// ─── Overview Tab ────────────────────────────────────────────────────────────
-
-function OverviewTab({ filtered, revenue, expenses, outstanding }: {
-  filtered: Transaction[]; revenue: number; expenses: number; outstanding: number
-}) {
-  const net = revenue - expenses
-  const refunds = filtered.filter(t => t.type === 'refund').reduce((s, t) => s + t.amount, 0)
-
-  return (
-    <div>
-      <div className="grid grid-cols-4 gap-4 mb-8">
-        {[
-          { label: 'Total revenue',  value: revenue,      color: 'text-ink'        },
-          { label: 'Total expenses', value: expenses,     color: 'text-ink'        },
-          { label: 'Net',            value: net,          color: net >= 0 ? 'text-[#2A6139]' : 'text-[#B06A6A]' },
-          { label: 'Outstanding',    value: outstanding,  color: 'text-[#7A5F2C]'  },
-        ].map(m => (
-          <div key={m.label} className="bg-surface rounded-2xl border border-line px-6 py-5">
-            <p className="text-xs text-ink-3 mb-2">{m.label}</p>
-            <p className={`font-display text-2xl ${m.color}`}>{fmt(m.value)}</p>
-            <p className="text-xs text-ink-3 mt-1">ETB</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Recent transactions */}
-      <div className="mb-8">
-        <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-3">Recent transactions</p>
-        <div className="bg-surface rounded-2xl border border-line overflow-hidden">
-          {filtered.slice(0, 8).map((t, i) => (
-            <TxRow key={t.id} tx={t} isLast={i === Math.min(7, filtered.length - 1)} />
-          ))}
-          {filtered.length === 0 && (
-            <div className="py-10 text-center text-ink-3 text-sm">No transactions in this period.</div>
-          )}
-        </div>
-      </div>
-
-      {refunds > 0 && (
-        <div className="bg-[#FBF5EA] rounded-2xl border border-[#E8D9C0] px-6 py-4">
-          <p className="text-xs font-semibold text-[#7A5F2C] mb-1">Refunds this period</p>
-          <p className="font-display text-xl text-[#7A5F2C]">{fmt(refunds)} ETB</p>
-        </div>
-      )}
     </div>
   )
 }
@@ -314,248 +299,9 @@ function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMetho
   )
 }
 
-// ─── Outstanding Tab ──────────────────────────────────────────────────────────
 
-function OutstandingTab({ customers, paymentMethods, onUpdateCustomers, onUpdateTransactions, transactions, onNavigateToCustomer }: {
-  customers: Customer[]
-  paymentMethods: PaymentMethod[]
-  onUpdateCustomers: (c: Customer[]) => void
-  onUpdateTransactions: (t: Transaction[]) => void
-  transactions: Transaction[]
-  onNavigateToCustomer?: (id: string) => void
-}) {
-  const [payingFor, setPayingFor] = useState<Customer | null>(null)
 
-  const debtors = customers.filter(c => (c.outstandingBalance ?? 0) > 0)
-    .sort((a, b) => (b.outstandingBalance ?? 0) - (a.outstandingBalance ?? 0))
 
-  function recordPayment(customerId: string, amount: number, method: string, note: string) {
-    const customer = customers.find(c => c.id === customerId)
-    if (!customer) return
-    const newBalance = Math.max(0, (customer.outstandingBalance ?? 0) - amount)
-    onUpdateCustomers(customers.map(c => c.id === customerId ? { ...c, outstandingBalance: newBalance } : c))
-    const tx: Transaction = {
-      id: `t${Date.now()}`, date: todayStr(), type: 'revenue',
-      description: `Payment — ${customer.name}`, category: 'Payment',
-      customerId: customer.id, customerName: customer.name,
-      branchId: 'b1', branchName: 'Bole', paymentMethod: method,
-      amount, amountPaid: amount, paymentStatus: 'paid',
-      notes: note, createdBy: 'Sara (Admin)', createdAt: nowStr(),
-      history: [{ action: 'Payment recorded', by: 'Sara (Admin)', at: nowStr() }],
-    }
-    onUpdateTransactions([...transactions, tx])
-    setPayingFor(null)
-  }
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-          {debtors.length} customer{debtors.length !== 1 ? 's' : ''} with outstanding balance
-        </p>
-      </div>
-
-      {debtors.length === 0 ? (
-        <div className="bg-surface rounded-2xl border border-line py-16 text-center">
-          <p className="font-display text-xl text-ink mb-1">All clear</p>
-          <p className="text-ink-3 text-sm">No outstanding customer balances.</p>
-        </div>
-      ) : (
-        <div className="bg-surface rounded-2xl border border-line overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line">
-                <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Customer</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Last visit</th>
-                <th className="text-right px-5 py-3 text-xs font-semibold text-ink-3">Outstanding</th>
-                <th className="px-5 py-3" />
-              </tr>
-            </thead>
-            <tbody>
-              {debtors.map(c => (
-                <tr key={c.id} className="border-b border-line last:border-0 hover:bg-bg">
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-warm-subtle flex items-center justify-center text-ink-3 text-xs font-semibold">
-                        {c.name.slice(0,2).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className="font-medium text-ink">{c.name}</p>
-                        <p className="text-xs text-ink-3">{c.phone}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-5 py-3 text-ink-3 text-sm">{c.lastVisit ?? '—'}</td>
-                  <td className="px-5 py-3 text-right font-semibold text-[#B06A6A]">
-                    {fmt(c.outstandingBalance ?? 0)} ETB
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex items-center justify-end gap-2">
-                      {onNavigateToCustomer && (
-                        <Button size="sm" variant="secondary" onClick={() => onNavigateToCustomer(c.id)}>View</Button>
-                      )}
-                      <Button size="sm" onClick={() => setPayingFor(c)}>Record payment</Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {payingFor && (
-        <RecordPaymentModal
-          customer={payingFor}
-          paymentMethods={paymentMethods}
-          onClose={() => setPayingFor(null)}
-          onRecord={recordPayment}
-        />
-      )}
-    </div>
-  )
-}
-
-// ─── Reports Tab ──────────────────────────────────────────────────────────────
-
-function ReportsTab({ transactions }: { transactions: Transaction[] }) {
-  const [range, setRange] = useState<'7' | '30'>('7')
-  const [view,  setView]  = useState<'revenue' | 'expenses'>('revenue')
-
-  const days = parseInt(range)
-  const labels: string[] = []
-  const revData: number[] = []
-  const expData: number[] = []
-
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date()
-    d.setDate(d.getDate() - i)
-    const ds = d.toISOString().split('T')[0]
-    const label = days <= 7
-      ? d.toLocaleDateString('en', { weekday: 'short' })
-      : d.getDate().toString()
-    labels.push(label)
-    revData.push(transactions.filter(t => t.type === 'revenue' && t.date === ds).reduce((s, t) => s + (t.amountPaid ?? t.amount), 0))
-    expData.push(transactions.filter(t => t.type === 'expense' && t.date === ds).reduce((s, t) => s + t.amount, 0))
-  }
-
-  const data = view === 'revenue' ? revData : expData
-  const max  = Math.max(...data, 1)
-
-  // Revenue by service
-  const byService: Record<string, number> = {}
-  transactions.filter(t => t.type === 'revenue' && t.serviceName).forEach(t => {
-    byService[t.serviceName!] = (byService[t.serviceName!] ?? 0) + (t.amountPaid ?? t.amount)
-  })
-  const byServiceArr = Object.entries(byService).sort((a, b) => b[1] - a[1])
-
-  // Expenses by category
-  const byCat: Record<string, number> = {}
-  transactions.filter(t => t.type === 'expense').forEach(t => {
-    byCat[t.category ?? 'Other'] = (byCat[t.category ?? 'Other'] ?? 0) + t.amount
-  })
-  const byCatArr = Object.entries(byCat).sort((a, b) => b[1] - a[1])
-
-  // Revenue by staff
-  const byStaff: Record<string, number> = {}
-  transactions.filter(t => t.type === 'revenue' && t.staffName).forEach(t => {
-    byStaff[t.staffName!] = (byStaff[t.staffName!] ?? 0) + (t.amountPaid ?? t.amount)
-  })
-  const byStaffArr = Object.entries(byStaff).sort((a, b) => b[1] - a[1])
-
-  const totalRev = transactions.filter(t => t.type === 'revenue').reduce((s, t) => s + (t.amountPaid ?? t.amount), 0)
-
-  return (
-    <div className="grid grid-cols-3 gap-6">
-      {/* Main chart */}
-      <div className="col-span-2 bg-surface rounded-2xl border border-line p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <p className="font-medium text-ink">Revenue over time</p>
-            <p className="text-xs text-ink-3 mt-0.5">Daily {view} in ETB</p>
-          </div>
-          <div className="flex items-center gap-1">
-            <button onClick={() => setView('revenue')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${view === 'revenue' ? 'bg-ink text-surface' : 'text-ink-3 hover:text-ink'}`}>Revenue</button>
-            <button onClick={() => setView('expenses')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${view === 'expenses' ? 'bg-ink text-surface' : 'text-ink-3 hover:text-ink'}`}>Expenses</button>
-            <div className="w-px h-4 bg-line mx-1" />
-            <button onClick={() => setRange('7')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${range === '7' ? 'bg-ink text-surface' : 'text-ink-3 hover:text-ink'}`}>7d</button>
-            <button onClick={() => setRange('30')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${range === '30' ? 'bg-ink text-surface' : 'text-ink-3 hover:text-ink'}`}>30d</button>
-          </div>
-        </div>
-
-        {/* Bar chart */}
-        <div className="flex items-end gap-1 h-36">
-          {data.map((v, i) => {
-            const pct = max > 0 ? (v / max) * 100 : 0
-            return (
-              <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                <div className="w-full flex items-end" style={{ height: '112px' }}>
-                  <div
-                    className={`w-full rounded-t-lg transition-all ${view === 'revenue' ? 'bg-ink' : 'bg-warm'}`}
-                    style={{ height: `${Math.max(pct, v > 0 ? 4 : 0)}%` }}
-                    title={`${labels[i]}: ${fmt(v)} ETB`}
-                  />
-                </div>
-                <span className="text-[9px] text-ink-3">{labels[i]}</span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Side breakdowns */}
-      <div className="flex flex-col gap-4">
-        {/* Revenue by service */}
-        <div className="bg-surface rounded-2xl border border-line p-5">
-          <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-3">By service</p>
-          <div className="flex flex-col gap-2">
-            {byServiceArr.slice(0, 5).map(([name, val]) => (
-              <div key={name}>
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="text-xs text-ink">{name}</span>
-                  <span className="text-xs font-semibold text-ink">{fmt(val)}</span>
-                </div>
-                <div className="h-1.5 bg-warm-subtle rounded-full overflow-hidden">
-                  <div className="h-full bg-ink rounded-full" style={{ width: `${(val / (totalRev || 1)) * 100}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Revenue by staff */}
-        <div className="bg-surface rounded-2xl border border-line p-5">
-          <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-3">By staff</p>
-          <div className="flex flex-col gap-2">
-            {byStaffArr.map(([name, val]) => (
-              <div key={name} className="flex items-center justify-between">
-                <span className="text-xs text-ink">{name}</span>
-                <span className="text-xs font-semibold text-ink">{fmt(val)} ETB</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Expenses by category */}
-        <div className="bg-surface rounded-2xl border border-line p-5">
-          <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-3">Expenses by category</p>
-          <div className="flex flex-col gap-1.5">
-            {byCatArr.map(([cat, val]) => (
-              <div key={cat} className="flex items-center justify-between">
-                <span className="text-xs text-ink-3">{cat}</span>
-                <span className="text-xs font-semibold text-ink">−{fmt(val)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 // ─── Transaction Detail Panel ─────────────────────────────────────────────────
 
@@ -767,42 +513,7 @@ function AddRevenueModal({ onClose, paymentMethods, onAdd }: {
   )
 }
 
-function RecordPaymentModal({ customer, paymentMethods, onClose, onRecord }: {
-  customer: Customer
-  paymentMethods: PaymentMethod[]
-  onClose: () => void
-  onRecord: (customerId: string, amount: number, method: string, note: string) => void
-}) {
-  const [amount, setAmount] = useState(String(customer.outstandingBalance ?? ''))
-  const [method, setMethod] = useState('Cash')
-  const [note,   setNote]   = useState('')
 
-  return (
-    <Modal open title={`Record payment — ${customer.name}`} onClose={onClose}>
-      <div className="p-5 flex flex-col gap-3">
-        <div className="bg-bg rounded-xl px-4 py-3 mb-1">
-          <p className="text-xs text-ink-3">Outstanding balance</p>
-          <p className="font-display text-xl text-[#B06A6A]">{fmt(customer.outstandingBalance ?? 0)} ETB</p>
-        </div>
-        <Field label="Amount paid (ETB)" type="number" value={amount} onChange={setAmount} placeholder="0" />
-        <div>
-          <label className="text-xs font-semibold text-ink-3 mb-1.5 block">Payment method</label>
-          <select value={method} onChange={e => setMethod(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg focus:outline-none">
-            {paymentMethods.filter(p => p.active).map(p => <option key={p.id}>{p.name}</option>)}
-          </select>
-        </div>
-        <Field label="Notes" value={note} onChange={setNote} placeholder="Optional" />
-        <div className="flex gap-2 pt-1">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button fullWidth onClick={() => onRecord(customer.id, parseFloat(amount) || 0, method, note)}>
-            Record payment
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  )
-}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -820,24 +531,6 @@ function ExportButton() {
     </div>
   )
   return <Button size="sm" variant="secondary" onClick={() => setState('choosing')}>Export</Button>
-}
-
-function TxRow({ tx, isLast }: { tx: Transaction; isLast: boolean }) {
-  return (
-    <div className={`flex items-center gap-4 px-5 py-3.5 ${!isLast ? 'border-b border-line' : ''}`}>
-      <TxTypeDot type={tx.type} />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-ink truncate">{tx.description}</p>
-        <p className="text-xs text-ink-3">{tx.category} · {tx.branchName}</p>
-      </div>
-      <div className="text-right flex-shrink-0">
-        <p className={`text-sm font-semibold ${tx.type === 'revenue' ? 'text-[#2A6139]' : tx.type === 'expense' ? 'text-ink' : 'text-[#B06A6A]'}`}>
-          {tx.type === 'revenue' ? '+' : '−'}{fmt(tx.amount)} ETB
-        </p>
-        <p className="text-xs text-ink-3">{tx.date}</p>
-      </div>
-    </div>
-  )
 }
 
 function TxTypeDot({ type }: { type: string }) {

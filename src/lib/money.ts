@@ -46,3 +46,15 @@ export function formatCents(cents: number): string {
 export function formatMoney(value: string | number | null | undefined): string {
   return formatCents(toCents(value))
 }
+
+/**
+ * Decimal string/number → grouped display without forced 2-decimal padding
+ * ("4,000", "4,000.50"). Use for report KPIs where "4,000 ETB" reads better
+ * than "4,000.00 ETB"; the value itself is never altered.
+ */
+export function formatMoneyCompact(
+  value: string | number | null | undefined,
+): string {
+  const amount = toCents(value) / 100
+  return amount.toLocaleString('en', { maximumFractionDigits: 2 })
+}
