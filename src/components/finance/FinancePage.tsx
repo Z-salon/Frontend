@@ -4,10 +4,10 @@ import type { Branch } from '../../types/api'
 import { Button, Modal } from '../ui'
 import { useBusiness } from '../../contexts/BusinessContext'
 import { useBranch } from '../../contexts/BranchContext'
-import { useExpenseCategories } from '../../hooks/useExpenseCategories'
 import { FinancePaymentsTab } from './FinancePaymentsTab'
 import { FinancePaymentMethodsTab } from './FinancePaymentMethodsTab'
 import { ExpenseCategoriesTab } from './ExpenseCategoriesTab'
+import { ExpenseLedgerTab } from './ExpenseLedgerTab'
 
 type FinanceTab =
   | 'overview'
@@ -134,12 +134,9 @@ export function FinancePage({
           />
         )}
         {tab === 'expenses' && (
-          <ExpensesTab
-            transactions={transactions}
-            filtered={filtered.filter(t => t.type === 'expense')}
+          <ExpenseLedgerTab
             businessId={businessId ?? activeBusinessId ?? undefined}
-            paymentMethods={paymentMethods}
-            onUpdateTransactions={onUpdateTransactions}
+            branches={branchList}
             onManageCategories={() => setTab('categories')}
           />
         )}
@@ -311,74 +308,6 @@ function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMetho
           onClose={() => setShowAdd(false)}
           paymentMethods={paymentMethods}
           onAdd={tx => onUpdate([...allTransactions, tx])}
-        />
-      )}
-    </div>
-  )
-}
-
-// ─── Expenses Tab ─────────────────────────────────────────────────────────────
-
-function ExpensesTab({ transactions, filtered, businessId, paymentMethods, onUpdateTransactions, onManageCategories }: {
-  transactions: Transaction[]
-  filtered: Transaction[]
-  businessId?: string
-  paymentMethods: PaymentMethod[]
-  onUpdateTransactions: (t: Transaction[]) => void
-  /** Jumps to the Categories tab — the only place categories are written. */
-  onManageCategories: () => void
-}) {
-  const [showAdd,       setShowAdd]       = useState(false)
-  const sorted = [...filtered].sort((a, b) => b.date.localeCompare(a.date))
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-          {sorted.length} expense{sorted.length !== 1 ? 's' : ''}
-        </p>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="secondary" onClick={onManageCategories}>Manage categories</Button>
-          <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Expense</Button>
-        </div>
-      </div>
-
-      <div className="bg-surface rounded-2xl border border-line overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-line">
-              <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Date</th>
-              <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Description</th>
-              <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Category</th>
-              <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Branch</th>
-              <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Payment</th>
-              <th className="text-right px-5 py-3 text-xs font-semibold text-ink-3">Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.length === 0 && (
-              <tr><td colSpan={6} className="py-10 text-center text-ink-3 text-sm">No expenses in this period.</td></tr>
-            )}
-            {sorted.map(t => (
-              <tr key={t.id} className="border-b border-line last:border-0 hover:bg-bg">
-                <td className="px-5 py-3 text-ink-3 text-xs">{t.date}</td>
-                <td className="px-5 py-3 text-ink font-medium">{t.description}</td>
-                <td className="px-5 py-3 text-ink-3 text-sm">{t.category}</td>
-                <td className="px-5 py-3 text-ink-3 text-sm">{t.branchName}</td>
-                <td className="px-5 py-3 text-ink-3 text-sm">{t.paymentMethod}</td>
-                <td className="px-5 py-3 text-right font-semibold text-ink">−{fmt(t.amount)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {showAdd && (
-        <AddExpenseModal
-          onClose={() => setShowAdd(false)}
-          businessId={businessId}
-          paymentMethods={paymentMethods}
-          onAdd={tx => onUpdateTransactions([...transactions, tx])}
         />
       )}
     </div>
@@ -832,87 +761,6 @@ function AddRevenueModal({ onClose, paymentMethods, onAdd }: {
         <div className="flex gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button onClick={submit} fullWidth>Add revenue</Button>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
-function AddExpenseModal({ onClose, businessId, paymentMethods, onAdd }: {
-  onClose: () => void
-  businessId?: string
-  paymentMethods: PaymentMethod[]
-  onAdd: (t: Transaction) => void
-}) {
-  // Real, active-only categories — the same endpoint the Categories tab
-  // writes to, so a category renamed there shows up here on the next open.
-  const { categories, loading } = useExpenseCategories(businessId)
-  const activeCategories = categories.filter(c => c.isActive)
-  const [picked, setPicked] = useState('')
-  // Until the user picks, follow the first available category.
-  const category = picked || activeCategories[0]?.name || ''
-
-  const [desc,     setDesc]     = useState('')
-  const [amount,   setAmount]   = useState('')
-  const [branch,   setBranch]   = useState('b1')
-  const [method,   setMethod]   = useState('Cash')
-  const [date,     setDate]     = useState(todayStr())
-  const [notes,    setNotes]    = useState('')
-
-  function submit() {
-    if (!desc || !amount) return
-    onAdd({
-      id: `t${Date.now()}`, date, type: 'expense',
-      description: desc, category,
-      branchId: branch, branchName: branch === 'b1' ? 'Bole' : 'Kazanchis',
-      paymentMethod: method, amount: parseFloat(amount),
-      amountPaid: parseFloat(amount), paymentStatus: 'paid',
-      notes, createdBy: 'Sara (Admin)', createdAt: nowStr(),
-      history: [{ action: 'Created', by: 'Sara (Admin)', at: nowStr() }],
-    })
-    onClose()
-  }
-
-  return (
-    <Modal open title="Add Expense" onClose={onClose}>
-      <div className="flex flex-col gap-3 p-5">
-        <div>
-          <label className="text-xs font-semibold text-ink-3 mb-1.5 block">Category</label>
-          <select value={category} onChange={e => setPicked(e.target.value)}
-            disabled={activeCategories.length === 0}
-            className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
-            {activeCategories.map(c => <option key={c.id}>{c.name}</option>)}
-          </select>
-          {activeCategories.length === 0 && (
-            <p className="text-xs text-ink-3 mt-1.5">
-              {loading
-                ? 'Loading categories…'
-                : 'No active expense categories yet — add one in Categories first.'}
-            </p>
-          )}
-        </div>
-        <Field label="Amount (ETB)" type="number" value={amount} onChange={setAmount} placeholder="0" />
-        <div>
-          <label className="text-xs font-semibold text-ink-3 mb-1.5 block">Branch</label>
-          <select value={branch} onChange={e => setBranch(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg focus:outline-none">
-            <option value="b1">Bole</option>
-            <option value="b2">Kazanchis</option>
-          </select>
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-ink-3 mb-1.5 block">Payment method</label>
-          <select value={method} onChange={e => setMethod(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg focus:outline-none">
-            {paymentMethods.filter(p => p.active).map(p => <option key={p.id}>{p.name}</option>)}
-          </select>
-        </div>
-        <Field label="Date" type="date" value={date} onChange={setDate} />
-        <Field label="Description" value={desc} onChange={setDesc} placeholder="e.g. Weekly cleaning service" />
-        <Field label="Notes" value={notes} onChange={setNotes} placeholder="Optional" />
-        <div className="flex gap-2 pt-1">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} fullWidth>Add expense</Button>
         </div>
       </div>
     </Modal>

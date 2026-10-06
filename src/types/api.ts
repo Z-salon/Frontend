@@ -1141,3 +1141,125 @@ export interface UpdateExpenseCategoryRequest {
   description?: string
   isActive?: boolean
 }
+
+// ============================================================
+// Expense ledger
+// ============================================================
+
+/**
+ * `GET /businesses/{businessId}/expenses?status=…`
+ * The only values the endpoint documents (OpenAPI enum).
+ */
+export type ExpenseStatus = 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' | 'VOIDED'
+
+/** Compact embedded reference returned on the expense. */
+export interface ExpenseRef {
+  id: string
+  name: string
+}
+
+export interface ExpensePaymentMethodRef {
+  id: string
+  name: string
+  type: string
+}
+
+export interface ExpenseCreatedByRef {
+  id: string
+  phone: string
+}
+
+/**
+ * `GET /businesses/{businessId}/expenses/:expenseId`
+ *
+ * Monetary values come back as decimal strings ("500.00") and the server is
+ * the authority on `status` / `amountPaid` — never derive them on the client.
+ */
+export interface Expense {
+  id: string
+  businessId: string
+  branchId: string
+  categoryId: string
+  /** Decimal → string. */
+  amount: string
+  /** Decimal → string. */
+  amountPaid: string
+  status: ExpenseStatus
+  description: string | null
+  vendor: string | null
+  receiptNumber: string | null
+  notes: string | null
+  expenseDate: string
+  dueDate: string | null
+  paidAt: string | null
+  voidedAt: string | null
+  voidReason: string | null
+  createdById: string
+  category?: ExpenseRef
+  branch?: ExpenseRef
+  paymentMethod?: ExpensePaymentMethodRef
+  createdBy?: ExpenseCreatedByRef
+  createdAt: string
+  updatedAt: string
+}
+
+/** `meta` from the standard list envelope. */
+export interface PaginationMeta {
+  total: number
+  page: number
+  limit: number
+  totalPages: number
+}
+
+/** `GET /businesses/{businessId}/expenses` query — `page`/`limit` match §5.3. */
+export type ExpenseListQuery = {
+  /** ISO date or datetime; date-only spans whole days (business timezone). */
+  from?: string
+  to?: string
+  branchId?: string
+  categoryId?: string
+  status?: ExpenseStatus
+  page?: number
+  limit?: number
+}
+
+/**
+ * `POST /businesses/{businessId}/expenses`
+ *
+ * The request-body contract is not documented in the repo or OpenAPI spec, so
+ * the shape is inferred from the response model and the UI fields. Amounts are
+ * sent as numbers, matching the appointment-payment convention already in use.
+ */
+export interface CreateExpenseRequest {
+  branchId: string
+  categoryId: string
+  amount: number
+  expenseDate: string
+  description?: string
+  vendor?: string
+  receiptNumber?: string
+  notes?: string
+  dueDate?: string
+  paymentMethodId?: string
+}
+
+/** `PATCH /businesses/{businessId}/expenses/:expenseId` */
+export type UpdateExpenseRequest = Partial<CreateExpenseRequest>
+
+/**
+ * `POST /businesses/{businessId}/expenses/:expenseId/payments`
+ *
+ * Records cash against the expense; the server recomputes `amountPaid` and
+ * `status`. `amountPaid` is NOT a client field.
+ */
+export interface RecordExpensePaymentRequest {
+  amount: number
+  paymentMethodId?: string
+  reference?: string
+  notes?: string
+}
+
+/** `POST /businesses/{businessId}/expenses/:expenseId/void` */
+export interface VoidExpenseRequest {
+  reason: string
+}
