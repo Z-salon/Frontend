@@ -6,7 +6,6 @@ import type {
   NavSection,
   FeedbackItem,
   Transaction,
-  ExpenseCategory,
   PaymentMethod,
   AppSettings,
 } from "./types"
@@ -48,7 +47,6 @@ import { SettingsPage } from "./components/settings/SettingsPage"
 import {
   initialFeedback,
   initialTransactions,
-  expenseCategories as initialExpCats,
   paymentMethods as initialPayMethods,
   defaultAppSettings,
 } from "./data/mock"
@@ -191,8 +189,8 @@ export default function App() {
   /* ── App data ────────────────────────────────────────────────────── */
   //
   // Migrated slices: appointments, services, categories, staff
-  // (+ details), branches, customers. Still mock: feedback,
-  // transactions, expense categories, payment methods, settings.
+  // (+ details), branches, customers, expense categories. Still mock:
+  // feedback, transactions, payment methods, settings.
 
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [services, setServices] = useState<Service[]>([])
@@ -212,7 +210,6 @@ export default function App() {
   const [feedback, setFeedback] = useState<FeedbackItem[]>(initialFeedback)
   const [transactions, setTransactions] =
     useState<Transaction[]>(initialTransactions)
-  const [expCats, setExpCats] = useState<ExpenseCategory[]>(initialExpCats)
   const [payMethods, setPayMethods] =
     useState<PaymentMethod[]>(initialPayMethods)
   const [appSettings, setAppSettings] =
@@ -601,12 +598,9 @@ export default function App() {
           <FinancePage
             businessId={activeBusinessId ?? undefined}
             transactions={transactions}
-            expenseCategories={expCats}
             paymentMethods={payMethods}
             customers={customers as any}
             onUpdateTransactions={setTransactions}
-            onUpdateCategories={setExpCats}
-            onUpdatePaymentMethods={setPayMethods}
             onUpdateCustomers={setCustomers as any}
             onNavigateToCustomer={() => setNavSection("customers")}
           />
@@ -616,10 +610,8 @@ export default function App() {
         return (
           <SettingsPage
             settings={appSettings}
-            expenseCategories={expCats}
             paymentMethods={payMethods}
             onUpdateSettings={setAppSettings}
-            onUpdateCategories={setExpCats}
             onUpdatePaymentMethods={setPayMethods}
             onLogout={() => void logout()}
           />

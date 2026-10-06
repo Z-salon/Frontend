@@ -122,12 +122,6 @@ export interface Transaction {
   history?: { action: string; by: string; at: string; reason?: string }[]
 }
 
-export interface ExpenseCategory {
-  id: string
-  name: string
-  active: boolean
-}
-
 export interface PaymentMethod {
   id: string
   name: string

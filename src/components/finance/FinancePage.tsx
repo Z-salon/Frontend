@@ -1,16 +1,19 @@
 import { useMemo, useState } from 'react'
-import type { Transaction, ExpenseCategory, PaymentMethod, Customer } from '../../types'
+import type { Transaction, PaymentMethod, Customer } from '../../types'
 import type { Branch } from '../../types/api'
 import { Button, Modal } from '../ui'
 import { useBusiness } from '../../contexts/BusinessContext'
 import { useBranch } from '../../contexts/BranchContext'
+import { useExpenseCategories } from '../../hooks/useExpenseCategories'
 import { FinancePaymentsTab } from './FinancePaymentsTab'
 import { FinancePaymentMethodsTab } from './FinancePaymentMethodsTab'
+import { ExpenseCategoriesTab } from './ExpenseCategoriesTab'
 
 type FinanceTab =
   | 'overview'
   | 'payments'
   | 'methods'
+  | 'categories'
   | 'transactions'
   | 'expenses'
   | 'outstanding'
@@ -18,28 +21,26 @@ type FinanceTab =
 
 interface FinancePageProps {
   transactions: Transaction[]
-  expenseCategories: ExpenseCategory[]
   paymentMethods: PaymentMethod[]
   customers: Customer[]
   onUpdateTransactions: (t: Transaction[]) => void
-  onUpdateCategories: (c: ExpenseCategory[]) => void
-  onUpdatePaymentMethods: (p: PaymentMethod[]) => void
   onUpdateCustomers: (c: Customer[]) => void
   onNavigateToCustomer?: (customerId: string) => void
-  /** Real business id — the Payments tab talks to §7 directly. */
+  /** Real business id — the Payments, Payment methods and Categories tabs
+   *  talk to the API directly. */
   businessId?: string
 }
 
 export function FinancePage({
-  transactions, expenseCategories, paymentMethods, customers,
+  transactions, paymentMethods, customers,
   businessId,
-  onUpdateTransactions, onUpdateCategories, onUpdatePaymentMethods,
-  onUpdateCustomers, onNavigateToCustomer,
+  onUpdateTransactions, onUpdateCustomers, onNavigateToCustomer,
 }: FinancePageProps) {
   const [tab, setTab] = useState<FinanceTab>('overview')
 
-  // Real branches for the Payments tab filter. The rest of this page still
-  // runs on seeded mock data, so branch names here come from the API.
+  // Real branches for the Payments tab filter. The transactions/expenses
+  // ledgers here still run on seeded mock data; expense categories load from
+  // the API in the Categories tab.
   const { activeBusinessId } = useBusiness()
   const { branches: branchCtx } = useBranch()
   const branchList = useMemo(
@@ -56,6 +57,7 @@ export function FinancePage({
     { id: 'overview',      label: 'Overview'      },
     { id: 'payments',      label: 'Payments'      },
     { id: 'methods',       label: 'Payment methods' },
+    { id: 'categories',    label: 'Categories'    },
     { id: 'transactions',  label: 'Transactions'  },
     { id: 'expenses',      label: 'Expenses'      },
     { id: 'outstanding',   label: 'Outstanding'   },
@@ -129,17 +131,16 @@ export function FinancePage({
             allTransactions={transactions}
             onUpdate={onUpdateTransactions}
             paymentMethods={paymentMethods}
-            expenseCategories={expenseCategories}
           />
         )}
         {tab === 'expenses' && (
           <ExpensesTab
             transactions={transactions}
             filtered={filtered.filter(t => t.type === 'expense')}
-            expenseCategories={expenseCategories}
+            businessId={businessId ?? activeBusinessId ?? undefined}
             paymentMethods={paymentMethods}
             onUpdateTransactions={onUpdateTransactions}
-            onUpdateCategories={onUpdateCategories}
+            onManageCategories={() => setTab('categories')}
           />
         )}
         {tab === 'outstanding' && (
@@ -163,6 +164,9 @@ export function FinancePage({
         )}
         {tab === 'methods' && (
           <FinancePaymentMethodsTab businessId={businessId ?? activeBusinessId ?? undefined} />
+        )}
+        {tab === 'categories' && (
+          <ExpenseCategoriesTab businessId={businessId ?? activeBusinessId ?? undefined} />
         )}
       </div>
     </div>
@@ -219,12 +223,11 @@ function OverviewTab({ filtered, revenue, expenses, outstanding }: {
 
 // ─── Transactions Tab ─────────────────────────────────────────────────────────
 
-function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMethods, expenseCategories }: {
+function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMethods }: {
   transactions: Transaction[]
   allTransactions: Transaction[]
   onUpdate: (t: Transaction[]) => void
   paymentMethods: PaymentMethod[]
-  expenseCategories: ExpenseCategory[]
 }) {
   const [selected, setSelected] = useState<Transaction | null>(null)
   const [showAdd,  setShowAdd]  = useState(false)
@@ -307,7 +310,6 @@ function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMetho
         <AddRevenueModal
           onClose={() => setShowAdd(false)}
           paymentMethods={paymentMethods}
-          expenseCategories={expenseCategories}
           onAdd={tx => onUpdate([...allTransactions, tx])}
         />
       )}
@@ -317,16 +319,16 @@ function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMetho
 
 // ─── Expenses Tab ─────────────────────────────────────────────────────────────
 
-function ExpensesTab({ transactions, filtered, expenseCategories, paymentMethods, onUpdateTransactions, onUpdateCategories }: {
+function ExpensesTab({ transactions, filtered, businessId, paymentMethods, onUpdateTransactions, onManageCategories }: {
   transactions: Transaction[]
   filtered: Transaction[]
-  expenseCategories: ExpenseCategory[]
+  businessId?: string
   paymentMethods: PaymentMethod[]
   onUpdateTransactions: (t: Transaction[]) => void
-  onUpdateCategories: (c: ExpenseCategory[]) => void
+  /** Jumps to the Categories tab — the only place categories are written. */
+  onManageCategories: () => void
 }) {
   const [showAdd,       setShowAdd]       = useState(false)
-  const [showManageCat, setShowManageCat] = useState(false)
   const sorted = [...filtered].sort((a, b) => b.date.localeCompare(a.date))
 
   return (
@@ -336,7 +338,7 @@ function ExpensesTab({ transactions, filtered, expenseCategories, paymentMethods
           {sorted.length} expense{sorted.length !== 1 ? 's' : ''}
         </p>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="secondary" onClick={() => setShowManageCat(true)}>Manage categories</Button>
+          <Button size="sm" variant="secondary" onClick={onManageCategories}>Manage categories</Button>
           <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Expense</Button>
         </div>
       </div>
@@ -374,16 +376,9 @@ function ExpensesTab({ transactions, filtered, expenseCategories, paymentMethods
       {showAdd && (
         <AddExpenseModal
           onClose={() => setShowAdd(false)}
-          expenseCategories={expenseCategories}
+          businessId={businessId}
           paymentMethods={paymentMethods}
           onAdd={tx => onUpdateTransactions([...transactions, tx])}
-        />
-      )}
-      {showManageCat && (
-        <ManageCategoriesModal
-          categories={expenseCategories}
-          onClose={() => setShowManageCat(false)}
-          onUpdate={onUpdateCategories}
         />
       )}
     </div>
@@ -773,10 +768,9 @@ function TxDetailPanel({ tx, allTransactions, onClose, onUpdate, paymentMethods 
 
 // ─── Modals ───────────────────────────────────────────────────────────────────
 
-function AddRevenueModal({ onClose, paymentMethods, expenseCategories, onAdd }: {
+function AddRevenueModal({ onClose, paymentMethods, onAdd }: {
   onClose: () => void
   paymentMethods: PaymentMethod[]
-  expenseCategories: ExpenseCategory[]
   onAdd: (t: Transaction) => void
 }) {
   const SOURCES = ['Service', 'Product', 'Gift Card', 'Membership', 'Package', 'Other']
@@ -844,13 +838,20 @@ function AddRevenueModal({ onClose, paymentMethods, expenseCategories, onAdd }: 
   )
 }
 
-function AddExpenseModal({ onClose, expenseCategories, paymentMethods, onAdd }: {
+function AddExpenseModal({ onClose, businessId, paymentMethods, onAdd }: {
   onClose: () => void
-  expenseCategories: ExpenseCategory[]
+  businessId?: string
   paymentMethods: PaymentMethod[]
   onAdd: (t: Transaction) => void
 }) {
-  const [category, setCategory] = useState(expenseCategories.filter(c => c.active)[0]?.name ?? 'Other')
+  // Real, active-only categories — the same endpoint the Categories tab
+  // writes to, so a category renamed there shows up here on the next open.
+  const { categories, loading } = useExpenseCategories(businessId)
+  const activeCategories = categories.filter(c => c.isActive)
+  const [picked, setPicked] = useState('')
+  // Until the user picks, follow the first available category.
+  const category = picked || activeCategories[0]?.name || ''
+
   const [desc,     setDesc]     = useState('')
   const [amount,   setAmount]   = useState('')
   const [branch,   setBranch]   = useState('b1')
@@ -877,10 +878,18 @@ function AddExpenseModal({ onClose, expenseCategories, paymentMethods, onAdd }: 
       <div className="flex flex-col gap-3 p-5">
         <div>
           <label className="text-xs font-semibold text-ink-3 mb-1.5 block">Category</label>
-          <select value={category} onChange={e => setCategory(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg focus:outline-none">
-            {expenseCategories.filter(c => c.active).map(c => <option key={c.id}>{c.name}</option>)}
+          <select value={category} onChange={e => setPicked(e.target.value)}
+            disabled={activeCategories.length === 0}
+            className="w-full px-3 py-2.5 rounded-xl border border-line text-sm bg-bg focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+            {activeCategories.map(c => <option key={c.id}>{c.name}</option>)}
           </select>
+          {activeCategories.length === 0 && (
+            <p className="text-xs text-ink-3 mt-1.5">
+              {loading
+                ? 'Loading categories…'
+                : 'No active expense categories yet — add one in Categories first.'}
+            </p>
+          )}
         </div>
         <Field label="Amount (ETB)" type="number" value={amount} onChange={setAmount} placeholder="0" />
         <div>
@@ -904,54 +913,6 @@ function AddExpenseModal({ onClose, expenseCategories, paymentMethods, onAdd }: 
         <div className="flex gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button onClick={submit} fullWidth>Add expense</Button>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
-function ManageCategoriesModal({ categories, onClose, onUpdate }: {
-  categories: ExpenseCategory[]
-  onClose: () => void
-  onUpdate: (c: ExpenseCategory[]) => void
-}) {
-  const [cats, setCats] = useState(categories)
-  const [newName, setNewName] = useState('')
-
-  function addCat() {
-    if (!newName.trim()) return
-    setCats(prev => [...prev, { id: `ec${Date.now()}`, name: newName.trim(), active: true }])
-    setNewName('')
-  }
-
-  function toggle(id: string) {
-    setCats(prev => prev.map(c => c.id === id ? { ...c, active: !c.active } : c))
-  }
-
-  return (
-    <Modal open title="Expense categories" onClose={onClose}>
-      <div className="p-5">
-        <div className="flex flex-col gap-1.5 mb-5 max-h-64 overflow-y-auto">
-          {cats.map(c => (
-            <div key={c.id} className="flex items-center justify-between px-3 py-2 bg-bg rounded-xl">
-              <span className={`text-sm ${c.active ? 'text-ink' : 'text-ink-3 line-through'}`}>{c.name}</span>
-              <button onClick={() => toggle(c.id)}
-                className={`text-xs px-2.5 py-1 rounded-lg border transition-all ${c.active ? 'border-line text-ink-3 hover:text-ink' : 'border-line text-ink-3'}`}>
-                {c.active ? 'Deactivate' : 'Activate'}
-              </button>
-            </div>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <input value={newName} onChange={e => setNewName(e.target.value)}
-            placeholder="New category name"
-            className="flex-1 px-3 py-2 rounded-xl border border-line text-sm bg-bg focus:outline-none focus:border-warm"
-            onKeyDown={e => e.key === 'Enter' && addCat()}
-          />
-          <Button size="sm" onClick={addCat}>Add</Button>
-        </div>
-        <div className="flex justify-end mt-4">
-          <Button onClick={() => { onUpdate(cats); onClose() }}>Save</Button>
         </div>
       </div>
     </Modal>

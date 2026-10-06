@@ -1,7 +1,7 @@
 // src/components/settings/SettingsPage.tsx
 
 import { useEffect, useMemo, useState } from 'react'
-import type { AppSettings, ExpenseCategory, PaymentMethod } from '../../types'
+import type { AppSettings, PaymentMethod } from '../../types'
 import type {
   BusinessConfig,
   BrandingPayload,
@@ -17,10 +17,8 @@ import { SampleWorkSettings } from './SampleWorkSettings'
 
 interface SettingsPageProps {
   settings: AppSettings
-  expenseCategories: ExpenseCategory[]
   paymentMethods: PaymentMethod[]
   onUpdateSettings: (s: AppSettings) => void
-  onUpdateCategories: (c: ExpenseCategory[]) => void
   onUpdatePaymentMethods: (p: PaymentMethod[]) => void
   onLogout: () => void
 }
@@ -96,8 +94,8 @@ function safeUrl(v: string): string | null {
 }
 
 export function SettingsPage({
-  settings, expenseCategories, paymentMethods,
-  onUpdateSettings, onUpdateCategories, onUpdatePaymentMethods, onLogout,
+  settings, paymentMethods,
+  onUpdateSettings, onUpdatePaymentMethods, onLogout,
 }: SettingsPageProps) {
   const { activeBusinessId } = useBusiness()
   const [section, setSection] = useState<SettingsSection>('business')
@@ -223,9 +221,7 @@ export function SettingsPage({
         {section === 'finance' && (
           <FinanceSettings
             settings={settings}
-            expenseCategories={expenseCategories}
             onUpdate={onUpdateSettings}
-            onUpdateCategories={onUpdateCategories}
           />
         )}
 
@@ -1045,18 +1041,14 @@ function BookingSettings() {
 /*  Section: Finance                                                   */
 /* ------------------------------------------------------------------ */
 
-function FinanceSettings({ settings, expenseCategories, onUpdate, onUpdateCategories }: {
+function FinanceSettings({ settings, onUpdate }: {
   settings: AppSettings
-  expenseCategories: ExpenseCategory[]
   onUpdate: (s: AppSettings) => void
-  onUpdateCategories: (c: ExpenseCategory[]) => void
 }) {
-  const [cats, setCats]       = useState(expenseCategories)
-  const [newCat,  setNewCat]  = useState('')
   const [saved,   setSaved]   = useState(false)
 
   function save() {
-    onUpdateCategories(cats)
+    onUpdate(settings)
     setSaved(true)
     setTimeout(() => setSaved(false), 2500)
   }
@@ -1084,33 +1076,12 @@ function FinanceSettings({ settings, expenseCategories, onUpdate, onUpdateCatego
 
         <div>
           <p className="text-sm font-semibold text-ink mb-3">Expense categories</p>
-          <div className="flex flex-col gap-1.5 mb-3">
-            {cats.map(c => (
-              <div key={c.id} className="flex items-center justify-between px-3 py-2.5 bg-bg rounded-xl">
-                <span className={`text-sm ${c.active ? 'text-ink' : 'text-ink-3 line-through'}`}>{c.name}</span>
-                <div className="flex items-center gap-2">
-                  <span className={`text-[10px] ${c.active ? 'text-[#2A6139]' : 'text-ink-3'}`}>{c.active ? 'Active' : 'Inactive'}</span>
-                  <Toggle checked={c.active} onChange={v => setCats(prev => prev.map(p => p.id === c.id ? { ...p, active: v } : p))} />
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input value={newCat} onChange={e => setNewCat(e.target.value)} placeholder="Add category"
-              className="flex-1 px-3 py-2 rounded-xl border border-line text-sm bg-bg focus:outline-none focus:border-warm"
-              onKeyDown={e => {
-                if (e.key === 'Enter' && newCat.trim()) {
-                  setCats(prev => [...prev, { id: `ec${Date.now()}`, name: newCat.trim(), active: true }])
-                  setNewCat('')
-                }
-              }}
-            />
-            <Button size="sm" onClick={() => {
-              if (!newCat.trim()) return
-              setCats(prev => [...prev, { id: `ec${Date.now()}`, name: newCat.trim(), active: true }])
-              setNewCat('')
-            }}>Add</Button>
-          </div>
+          <p className="text-xs text-ink-3 bg-bg px-3 py-2.5 rounded-lg">
+            Revenue and expense categories are managed in{' '}
+            <span className="font-medium text-ink">Finance → Categories</span>.
+            They come from the real API, so they must be created there before an
+            expense can be recorded against them.
+          </p>
         </div>
 
         <SaveBar saved={saved} onSave={save} />

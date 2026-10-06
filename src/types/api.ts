@@ -1103,3 +1103,41 @@ export interface SubmitReceiptInput {
   receiptImagePublicId: string
   customerNote?: string
 }
+
+// ============================================================
+// Expense categories
+// ============================================================
+
+/**
+ * `GET /businesses/{businessId}/expense-categories`
+ *
+ * Names are unique per business, so a duplicate POST/PATCH comes back as a
+ * 4xx — the server stays the authority on uniqueness. There is no DELETE:
+ * a category is retired by flipping `isActive` through PATCH, which keeps
+ * historical expenses pointing at a real row.
+ */
+export interface ExpenseCategory {
+  id: string
+  businessId: string
+  name: string
+  description: string | null
+  isActive: boolean
+  createdAt: string
+}
+
+/** `POST /businesses/{businessId}/expense-categories` */
+export interface CreateExpenseCategoryRequest {
+  name: string
+  description?: string
+}
+
+/**
+ * `PATCH /businesses/{businessId}/expense-categories/{categoryId}`
+ *
+ * Also how activation works: `{ isActive: true }` / `{ isActive: false }`.
+ */
+export interface UpdateExpenseCategoryRequest {
+  name?: string
+  description?: string
+  isActive?: boolean
+}
