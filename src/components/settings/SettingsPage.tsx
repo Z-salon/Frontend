@@ -9,6 +9,7 @@ import type {
   BookingConfigPatch,
 } from '../../types/api'
 import { Button, Toggle } from '../ui'
+import { ImageUploader } from '../ui/ImageUploader'
 import { businessApi } from '../../api/business.api'
 import { bookingConfigApi } from '../../api/booking-config.api'
 import { useBusiness } from '../../contexts/BusinessContext'
@@ -479,6 +480,8 @@ function BrandingSettings({
   const [instagram,   setInstagram]       = useState('')
   const [telegram,    setTelegram]        = useState('')
   const [tiktok,      setTiktok]          = useState('')
+  const [logoUrl,     setLogoUrl]         = useState('')
+  const [logoPublicId, setLogoPublicId]   = useState('')
   const [saving,      setSaving]          = useState(false)
   const [saved,       setSaved]           = useState(false)
   const [error,       setError]           = useState<string | null>(null)
@@ -494,6 +497,8 @@ function BrandingSettings({
     setInstagram(readString(branding, 'instagramUrl') ?? '')
     setTelegram(readString(branding, 'telegramUrl') ?? '')
     setTiktok(readString(branding, 'tiktokUrl') ?? '')
+    setLogoUrl(branding.logo?.url ?? '')
+    setLogoPublicId(branding.logo?.publicId ?? '')
   }, [branding])
 
   function trimmedOrNull(v: string): string | null {
@@ -510,7 +515,9 @@ function BrandingSettings({
     facebook    !== (readString(branding, 'facebookUrl') ?? '') ||
     instagram   !== (readString(branding, 'instagramUrl') ?? '') ||
     telegram    !== (readString(branding, 'telegramUrl') ?? '') ||
-    tiktok      !== (readString(branding, 'tiktokUrl') ?? '')
+    tiktok      !== (readString(branding, 'tiktokUrl') ?? '') ||
+    logoUrl     !== (branding.logo?.url ?? '') ||
+    logoPublicId !== (branding.logo?.publicId ?? '')
   )
 
   async function save() {
@@ -523,6 +530,7 @@ function BrandingSettings({
       // unparseable input (which clears the colour); `safeUrl` prepends
       // https:// so bare domains like `facebook.com/salon` pass.
       await businessApi.updateBranding(businessId, {
+        logo:           logoUrl ? { url: logoUrl, publicId: logoPublicId } : null,
         description:    trimmedOrNull(description),
         aboutUs:        trimmedOrNull(aboutUs),
         primaryColor:   safeHex(primary),
@@ -546,7 +554,9 @@ function BrandingSettings({
   }
 
   const businessName = branding?.branches?.[0]?.name ?? 'Z-salon'
-  const logoUrl = readLogoUrl(branding)
+  const logoFolder = businessId
+    ? `business/${businessId}/logo`
+    : 'business/unknown/logo'
 
   return (
     <>
@@ -557,28 +567,21 @@ function BrandingSettings({
         {/* Public page link — prominent placement in the Branding tab */}
         {businessId && <PublicPageLink businessId={businessId} />}
 
-        <div>
-          <label className="text-xs font-semibold text-ink-3 mb-3 block">
-            Salon logo
-          </label>
-          <div className="w-24 h-24 rounded-2xl border-2 border-dashed border-line bg-bg flex items-center justify-center overflow-hidden">
-            {logoUrl ? (
-              <img
-                src={logoUrl}
-                alt="Salon logo"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="text-center">
-                <div className="font-display text-2xl text-warm leading-none">Z</div>
-                <p className="text-[10px] text-ink-3 mt-1">No logo</p>
-              </div>
-            )}
-          </div>
-          <p className="text-[11px] text-ink-3 mt-2">
-            Image uploads are managed through the branding API — not editable here yet.
-          </p>
-        </div>
+        <ImageUploader
+          label="Logo"
+          hint="PNG or JPG, up to 2 MB"
+          aspect="square"
+          value={logoUrl}
+          folder={logoFolder}
+          onChange={asset => {
+            setLogoUrl(asset.imageUrl)
+            setLogoPublicId(asset.publicId)
+          }}
+          onRemove={() => {
+            setLogoUrl('')
+            setLogoPublicId('')
+          }}
+        />
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -1422,15 +1425,6 @@ function readString(
   if (!obj) return null
   const v = (obj as any)[key]
   return typeof v === 'string' ? v : null
-}
-
-function readLogoUrl(branding: BrandingPayload | null): string | null {
-  if (!branding) return null
-  const b = branding as unknown as {
-    logoUrl?: string | null
-    logo?: { url?: string | null } | null
-  }
-  return b.logo?.url ?? b.logoUrl ?? null
 }
 
 function extractErrorMessage(err: unknown, fallback = 'Something went wrong.'): string {
