@@ -1268,12 +1268,17 @@ export type UpdateExpenseRequest = Partial<CreateExpenseRequest>
  *
  * Records cash against the expense; the server recomputes `amountPaid` and
  * `status`. `amountPaid` is NOT a client field.
+ *
+ * Contract: `amount` is required; `paidAt` and `paymentMethodId` are
+ * optional. There is no `reference`/`notes` on this request — the backend
+ * rejects unknown fields with a 400.
  */
 export interface RecordExpensePaymentRequest {
   amount: number
+  /** ISO datetime; defaults to now on the server when omitted. */
+  paidAt?: string
+  /** Real backend payment-method UUID. Omit when none is available. */
   paymentMethodId?: string
-  reference?: string
-  notes?: string
 }
 
 /** `POST /businesses/{businessId}/expenses/:expenseId/void` */

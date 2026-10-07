@@ -256,8 +256,6 @@ function RecordPaymentDialog({
   const activeMethods = methods.filter(m => m.isActive)
   const [amount, setAmount] = useState(centsToInput(outstandingCents))
   const [methodId, setMethodId] = useState(expense.paymentMethod?.id ?? '')
-  const [reference, setReference] = useState('')
-  const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -277,10 +275,12 @@ function RecordPaymentDialog({
     setSaving(true)
     setFormError(null)
     try {
-      const input: RecordExpensePaymentRequest = { amount: Number(amount) }
+      /* Only the confirmed payment contract fields go on the wire:
+         `amount` (number, required) and `paymentMethodId` (optional UUID).
+         `paidAt` is omitted so the server stamps it. UI-only fields such as
+         reference/notes are not part of this endpoint and would 400. */
+      const input: RecordExpensePaymentRequest = { amount: cents / 100 }
       if (methodId) input.paymentMethodId = methodId
-      if (reference.trim()) input.reference = reference.trim()
-      if (notes.trim()) input.notes = notes.trim()
       const updated = await onRecord(input)
       onRecorded(updated)
     } catch (err) {
@@ -332,20 +332,6 @@ function RecordPaymentDialog({
             </option>
           ))}
         </Select>
-
-        <Input
-          label="Reference"
-          value={reference}
-          onChange={e => setReference(e.target.value)}
-          placeholder="Optional"
-        />
-
-        <Input
-          label="Notes"
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          placeholder="Optional"
-        />
 
         {formError && <DialogError message={formError} />}
 
