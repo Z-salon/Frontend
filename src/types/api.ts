@@ -839,13 +839,14 @@ export interface AppointmentPayment {
   businessId: string;
   branchId: string;
   paymentMethodId: string;
-  paymentMethod?: { name: string; type: string } | null;
+  paymentMethod?: { id: string; name: string; type: string } | null;
   amount: string;
   status: PaymentStatus;
   reference: string | null;
   notes: string | null;
   recordedById: string;
   paidAt: string;
+  createdAt?: string;
   /** Only on the list endpoint (§7.2). */
   recordedBy?: { id: string; phone?: string | null } | null;
 }
@@ -1597,12 +1598,14 @@ export interface RefundRequestListResult {
 }
 
 /**
- * `GET /businesses/{businessId}/appointments/{appointmentId}/refundable`
+ * `GET /businesses/{businessId}/appointments/{appointmentId}/financials`
  *
  * The server owns every amount. `refundable` is the ceiling for a new
- * refund request; the client never derives it.
+ * refund request; the client never derives it from the other fields.
+ * `finalized` reflects whether the appointment's final agreed amount has
+ * been settled, and must be respected before treating money as refundable.
  */
-export interface RefundableAppointment {
+export interface AppointmentFinancials {
   appointmentId: string
   originalAmount: string
   finalAgreedAmount: string
@@ -1612,8 +1615,6 @@ export interface RefundableAppointment {
   refunded: string
   refundReserved: string
   refundable: string
-  policyType: string
-  refundPercentage: number
 }
 
 /** `POST /businesses/{businessId}/refund-requests` body. */

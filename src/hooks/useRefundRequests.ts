@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { refundsApi } from '../api/refunds.api'
 import { appointmentsApi } from '../api/appointments.api'
 import type {
+  AppointmentFinancials,
   AppointmentListResult,
   AppointmentPayment,
   PaginationMeta,
   RefundRequest,
   RefundRequestStatus,
-  RefundableAppointment,
 } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -147,14 +147,19 @@ export function useRefundRequest(
   )
 }
 
-export function useRefundable(
+/**
+ * The money figures for an appointment, from the canonical appointment
+ * financials endpoint. The server owns every amount (`refundable` is the
+ * refund ceiling); the client never derives them.
+ */
+export function useAppointmentFinancials(
   businessId: string | null | undefined,
   appointmentId: string | null | undefined,
-): AsyncResource<RefundableAppointment> {
+): AsyncResource<AppointmentFinancials> {
   return useAsyncResource(
     businessId && appointmentId ? `${businessId}:${appointmentId}` : null,
-    'Unable to load the refundable amount.',
-    () => refundsApi.refundable(businessId as string, appointmentId as string),
+    'Unable to load the appointment financials.',
+    () => appointmentsApi.financials(businessId as string, appointmentId as string),
     [businessId, appointmentId],
   )
 }
@@ -166,7 +171,7 @@ export function useRefundAppointmentPayments(
 ): AsyncResource<AppointmentPayment[]> {
   return useAsyncResource(
     businessId && appointmentId ? `${businessId}:${appointmentId}` : null,
-    'Unable to load payments for this appointment.',
+    'Unable to load appointment payments.',
     () => appointmentsApi.listPayments(businessId as string, appointmentId as string),
     [businessId, appointmentId],
   )

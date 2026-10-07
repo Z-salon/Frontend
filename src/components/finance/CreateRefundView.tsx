@@ -1,24 +1,25 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import type { Appointment } from '../../types/api'
+import type { Appointment, AppointmentPayment } from '../../types/api'
 import { Button, Select, Textarea } from '../ui'
 import { useToast } from '../ui/Toast'
 import {
   useRefundAppointments,
   useRefundAppointmentPayments,
-  useRefundable,
+  useAppointmentFinancials,
 } from '../../hooks/useRefundRequests'
 import { refundsApi } from '../../api/refunds.api'
 import { apiErrorMessage } from '../../api/errors'
 import { formatMoney, toCents } from '../../lib/money'
-import { formatExpenseDay } from '../../lib/dates'
+import { formatDateTime } from '../../lib/dates'
 
 /* ------------------------------------------------------------------ */
 /*  Create refund                                                      */
 /*                                                                     */
 /*  Appointment and payment selection reuse the existing appointment    */
 /*  APIs — no eligible-appointment endpoint is invented. After an       */
-/*  appointment is picked, the server's `refundable` figures drive the  */
-/*  eligibility panel and the amount ceiling.                           */
+/*  appointment is picked, the server's appointment financials drive    */
+/*  the eligibility panel and the amount ceiling; nothing is derived    */
+/*  on the client.                                                     */
 /* ------------------------------------------------------------------ */
 
 function amountOrDash(value: string | null | undefined): string {
@@ -41,8 +42,36 @@ function appointmentLabel(a: Appointment): string {
     ? [c.firstName, c.lastName].filter(Boolean).join(' ').trim() || 'Customer'
     : 'Customer'
   const service = a.service?.name ? ` — ${a.service.name}` : ''
-  const when = formatExpenseDay(a.scheduledStart)
-  return `${name}${service} — ${when}`
+  const when = formatDateTime(a.scheduledStart)
+  const amount = a.totalAmount ? ` — ${formatMoney(a.totalAmount)} ETB` : ''
+  return `${name}${service} — ${when}${amount}`
+}
+
+/* Payment-method type labels mirror the backend enum (see the payment
+   methods screen); an unknown value is shown verbatim rather than hidden. */
+const PAYMENT_TYPE_LABELS: Record<string, string> = {
+  CASH: 'Cash',
+  MOBILE_MONEY: 'Mobile money',
+  BANK_TRANSFER: 'Bank transfer',
+  CARD: 'Card',
+  OTHER: 'Other',
+}
+
+function paymentTypeLabel(type: string | null | undefined): string | null {
+  if (!type) return null
+  return PAYMENT_TYPE_LABELS[type] ?? type
+}
+
+/** Secondary line for a payment row, built only from backend fields. */
+function paymentMeta(p: AppointmentPayment): string {
+  const parts: Array<string | null> = [
+    paymentTypeLabel(p.paymentMethod?.type),
+    p.status || null,
+    p.reference ? `Ref: ${p.reference}` : null,
+    p.paidAt ? `Paid ${formatDateTime(p.paidAt)}` : null,
+    p.notes,
+  ]
+  return parts.filter((part): part is string => !!part).join(' · ')
 }
 
 export function CreateRefundView({
@@ -68,7 +97,7 @@ export function CreateRefundView({
   const [formError, setFormError] = useState<string | null>(null)
 
   const appointments = useRefundAppointments(businessId, branchId || undefined)
-  const refundable = useRefundable(businessId, appointmentId || undefined)
+  const financials = useAppointmentFinancials(businessId, appointmentId || undefined)
   const payments = useRefundAppointmentPayments(businessId, appointmentId || undefined)
 
   /**
@@ -91,20 +120,39 @@ export function CreateRefundView({
     [appointmentList],
   )
 
-  const paidPayments = useMemo(
-    () => (payments.data ?? []).filter(p => p.status === 'PAID'),
-    [payments.data],
-  )
+  /**
+   * Only surface payments that belong to the currently selected
+   * appointment. The resource keeps the previous appointment's payload
+   * until the new request resolves, so this guard is what prevents
+   * appointment A's payments from lingering after B is chosen.
+   */
+  const paymentList = useMemo(() => {
+    const rows = payments.data
+    if (!Array.isArray(rows)) return []
+    return rows.filter(p => p.appointmentId === appointmentId)
+  }, [payments.data, appointmentId])
+
+  /* A refund can only be raised against a payment the server recorded as
+     PAID; voided rows are shown for context but cannot be selected. */
+  const hasSelectablePayment = paymentList.some(p => p.status === 'PAID')
+
+  const noAppointments =
+    !appointments.loading && !appointments.error && appointmentOptions.length === 0
 
   /* Only trust figures that belong to the currently selected appointment. */
-  const eligibility =
-    refundable.data && refundable.data.appointmentId === appointmentId
-      ? refundable.data
+  const financialsData =
+    financials.data && financials.data.appointmentId === appointmentId
+      ? financials.data
       : null
 
-  const refundableAmount = eligibility?.refundable
+  const refundableAmount = financialsData?.refundable
   const refundableCents = toCents(refundableAmount)
   const amountCents = toCents(amount)
+
+  /* The amount is only usable once the server reports a finalized
+     appointment with a positive refundable ceiling. */
+  const isFinalized = financialsData?.finalized === true
+  const canRefund = isFinalized && refundableCents > 0
 
   function onBranchChange(value: string) {
     setBranchId(value)
@@ -130,6 +178,18 @@ export function CreateRefundView({
       setFormError('Select an appointment.')
       return
     }
+    if (!financialsData) {
+      setFormError('Financial information is still loading. Please wait.')
+      return
+    }
+    if (!isFinalized) {
+      setFormError('This appointment is not finalized, so it cannot be refunded.')
+      return
+    }
+    if (refundableCents <= 0) {
+      setFormError('No refundable amount is available for this appointment.')
+      return
+    }
     if (!paymentId) {
       setFormError('Select the payment being refunded.')
       return
@@ -138,13 +198,9 @@ export function CreateRefundView({
       setFormError('Enter a refund amount greater than 0.')
       return
     }
-    if (refundableCents <= 0 && eligibility) {
-      setFormError('This appointment has no refundable amount.')
-      return
-    }
-    if (refundableCents > 0 && amountCents > refundableCents) {
+    if (amountCents > refundableCents) {
       setFormError(
-        `The amount cannot exceed the refundable ${formatMoney(refundableAmount)} ETB.`,
+        `Refund amount cannot exceed the refundable amount of ${formatMoney(refundableAmount)} ETB.`,
       )
       return
     }
@@ -201,7 +257,11 @@ export function CreateRefundView({
             disabled={appointments.loading && !appointments.data}
           >
             <option value="">
-              {appointments.loading ? 'Loading appointments…' : 'Select appointment'}
+              {appointments.loading
+                ? 'Loading appointments…'
+                : noAppointments
+                  ? 'No appointments found'
+                  : 'Select appointment'}
             </option>
             {appointmentOptions.map(o => (
               <option key={o.value} value={o.value}>{o.label}</option>
@@ -209,6 +269,9 @@ export function CreateRefundView({
           </Select>
           {appointments.error && (
             <p className="text-xs text-[#B06A6A]">{appointments.error}</p>
+          )}
+          {noAppointments && (
+            <p className="text-xs text-ink-3">No appointments found.</p>
           )}
         </section>
 
@@ -220,47 +283,135 @@ export function CreateRefundView({
             <p className="text-sm text-ink-3 py-2">
               Select an appointment to see its refundable amount.
             </p>
-          ) : refundable.error ? (
+          ) : financials.error ? (
             <p className="text-sm text-[#B06A6A] py-2">
-              {refundable.error} The appointment may not be eligible for a refund.
+              {financials.error} The appointment may not be eligible for a refund.
             </p>
+          ) : !financialsData ? (
+            <p className="text-sm text-ink-3 py-2">Loading financial information…</p>
           ) : (
             <>
               <EligibilityRow
                 label="Original amount"
-                value={refundable.loading && !eligibility ? '…' : amountOrDash(eligibility?.originalAmount)}
+                value={amountOrDash(financialsData.originalAmount)}
               />
               <EligibilityRow
                 label="Final agreed amount"
-                value={refundable.loading && !eligibility ? '…' : amountOrDash(eligibility?.finalAgreedAmount)}
+                value={amountOrDash(financialsData.finalAgreedAmount)}
               />
               <EligibilityRow
                 label="Verified paid"
-                value={refundable.loading && !eligibility ? '…' : amountOrDash(eligibility?.verifiedPaid)}
+                value={amountOrDash(financialsData.verifiedPaid)}
               />
               <EligibilityRow
                 label="Outstanding"
-                value={refundable.loading && !eligibility ? '…' : amountOrDash(eligibility?.outstanding)}
+                value={amountOrDash(financialsData.outstanding)}
               />
               <EligibilityRow
                 label="Already refunded"
-                value={refundable.loading && !eligibility ? '…' : amountOrDash(eligibility?.refunded)}
+                value={amountOrDash(financialsData.refunded)}
               />
               <EligibilityRow
                 label="Refund reserved"
-                value={refundable.loading && !eligibility ? '…' : amountOrDash(eligibility?.refundReserved)}
+                value={amountOrDash(financialsData.refundReserved)}
               />
               <div className="flex items-center justify-between gap-4 pt-2 mt-1 border-t border-line">
-                <span className="text-sm font-medium text-ink-2">Maximum refundable</span>
+                <span className="text-sm font-medium text-ink-2">Refundable amount</span>
                 <span className="text-sm font-semibold text-ink tabular-nums">
-                  {refundable.loading && !eligibility ? '…' : amountOrDash(refundableAmount)}
+                  {amountOrDash(refundableAmount)}
                 </span>
               </div>
+              {!isFinalized ? (
+                <p className="text-xs text-[#B06A6A] pt-2">
+                  This appointment is not finalized, so no refund can be created yet.
+                </p>
+              ) : refundableCents <= 0 ? (
+                <p className="text-sm text-[#B06A6A] py-2">
+                  No refundable amount is currently available for this appointment.
+                </p>
+              ) : null}
             </>
           )}
         </section>
 
         <section className="bg-surface rounded-2xl border border-line px-5 py-4 grid gap-4">
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-ink-2">Payment *</label>
+              <p className="text-xs text-ink-3">Select the payment associated with this refund</p>
+            </div>
+
+            {!appointmentId ? (
+              <p className="text-sm text-ink-3 py-2">Select an appointment first.</p>
+            ) : payments.loading ? (
+              <p className="text-sm text-ink-3 py-2">Loading payments…</p>
+            ) : payments.error ? (
+              <div className="flex items-center gap-3 py-2">
+                <p className="text-sm text-[#B06A6A]">{payments.error}</p>
+                <Button size="sm" variant="secondary" onClick={() => void payments.reload()}>
+                  Retry
+                </Button>
+              </div>
+            ) : paymentList.length === 0 ? (
+              <p className="text-sm text-ink-3 py-2">
+                No payments found for this appointment.
+              </p>
+            ) : (
+              <div className="grid gap-2">
+                {paymentList.map(p => {
+                  const selectable = p.status === 'PAID'
+                  const selected = paymentId === p.id
+                  const meta = paymentMeta(p)
+                  return (
+                    <label
+                      key={p.id}
+                      className={[
+                        'flex items-start gap-3 rounded-xl border px-3.5 py-3 transition-colors',
+                        selected ? 'border-warm bg-warm/5' : 'border-line',
+                        selectable
+                          ? 'cursor-pointer hover:border-ink-3/40'
+                          : 'opacity-60 cursor-not-allowed',
+                      ].join(' ')}
+                    >
+                      <input
+                        type="radio"
+                        name="refund-payment"
+                        value={p.id}
+                        checked={selected}
+                        disabled={!selectable}
+                        onChange={() => setPaymentId(p.id)}
+                        className="mt-0.5 h-4 w-4 accent-warm"
+                      />
+                      <span className="flex-1 min-w-0">
+                        <span className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-medium text-ink truncate">
+                            {p.paymentMethod?.name ?? 'Payment'}
+                          </span>
+                          <span className="text-sm text-ink tabular-nums whitespace-nowrap">
+                            {formatMoney(p.amount)} ETB
+                          </span>
+                        </span>
+                        {meta && (
+                          <span className="mt-0.5 block text-xs text-ink-3">{meta}</span>
+                        )}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
+
+            {appointmentId &&
+              !payments.loading &&
+              !payments.error &&
+              paymentList.length > 0 &&
+              !hasSelectablePayment && (
+                <p className="text-xs text-[#B06A6A]">
+                  Only paid payments can be refunded.
+                </p>
+              )}
+          </div>
+
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium text-ink-2">Refund amount *</label>
             <div className="flex items-center gap-2">
@@ -270,36 +421,12 @@ export function CreateRefundView({
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder="0.00"
-                className="h-10 px-3 rounded-[10px] border border-line text-sm bg-surface text-ink focus:outline-none focus:border-warm focus:ring-1 focus:ring-warm/20 w-40"
+                disabled={!canRefund}
+                className="h-10 px-3 rounded-[10px] border border-line text-sm bg-surface text-ink focus:outline-none focus:border-warm focus:ring-1 focus:ring-warm/20 w-40 disabled:opacity-60 disabled:cursor-not-allowed"
               />
               <span className="text-sm text-ink-3">ETB</span>
             </div>
           </div>
-
-          <Select
-            label="Payment"
-            value={paymentId}
-            onChange={e => setPaymentId(e.target.value)}
-            disabled={!appointmentId || (payments.loading && !payments.data)}
-          >
-            <option value="">
-              {!appointmentId
-                ? 'Select an appointment first'
-                : payments.loading
-                  ? 'Loading payments…'
-                  : paidPayments.length === 0
-                    ? 'No paid payments for this appointment'
-                    : 'Select payment'}
-            </option>
-            {paidPayments.map(p => (
-              <option key={p.id} value={p.id}>
-                {formatMoney(p.amount)} ETB
-                {p.paymentMethod?.name ? ` — ${p.paymentMethod.name}` : ''}
-                {p.reference ? ` — ${p.reference}` : ''}
-              </option>
-            ))}
-          </Select>
-          {payments.error && <p className="text-xs text-[#B06A6A]">{payments.error}</p>}
 
           <Textarea
             label="Reason *"
@@ -316,7 +443,11 @@ export function CreateRefundView({
           <Button variant="secondary" disabled={busy} onClick={onBack}>
             Cancel
           </Button>
-          <Button loading={busy} onClick={handleSubmit}>
+          <Button
+            loading={busy}
+            disabled={busy || !canRefund || !paymentId}
+            onClick={handleSubmit}
+          >
             {busy ? 'Creating…' : 'Create Refund'}
           </Button>
         </div>

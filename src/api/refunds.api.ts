@@ -5,7 +5,6 @@ import type {
   RefundRequest,
   RefundRequestListQuery,
   RefundRequestListResult,
-  RefundableAppointment,
   RejectRefundRequestInput,
 } from '../types/api'
 
@@ -59,17 +58,6 @@ export const refundsApi = {
   /** `GET /businesses/:businessId/refund-requests/:refundRequestId` */
   get: (businessId: string, refundRequestId: string) =>
     http.get<RefundRequest>(`${path(businessId)}/${refundRequestId}`),
-
-  /**
-   * `GET /businesses/:businessId/appointments/:appointmentId/refundable`
-   *
-   * Reuses the appointments route; the server computes the refundable
-   * amount (the client never calculates it).
-   */
-  refundable: (businessId: string, appointmentId: string) =>
-    http.get<RefundableAppointment>(
-      `/businesses/${businessId}/appointments/${appointmentId}/refundable`,
-    ),
 
   /** `POST /businesses/:businessId/refund-requests` */
   create: (businessId: string, input: CreateRefundRequestInput) =>

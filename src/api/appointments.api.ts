@@ -12,6 +12,7 @@ import type {
   ServiceUsageUpdateInput,
   AppointmentPaymentsInput,
   AppointmentPayment,
+  AppointmentFinancials,
 } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -126,6 +127,18 @@ export const appointmentsApi = {
   get: (businessId: string, appointmentId: string) =>
     http.get<Appointment>(
       `/businesses/${businessId}/appointments/${appointmentId}`,
+    ),
+
+  /**
+   * Money figures for one appointment. The server computes every amount,
+   * including the `refundable` ceiling used by the Create Refund form —
+   * the client never derives it from the other fields.
+   *
+   * `GET /businesses/:businessId/appointments/:id/financials`
+   */
+  financials: (businessId: string, appointmentId: string) =>
+    http.get<AppointmentFinancials>(
+      `/businesses/${businessId}/appointments/${appointmentId}/financials`,
     ),
 
   /* ---------------------------------------------------------------- */
