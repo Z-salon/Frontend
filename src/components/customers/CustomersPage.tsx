@@ -305,15 +305,19 @@ export function CustomersPage({ appointments, onAppointmentsChange }: CustomersP
     }
 
     try {
-      const created = await customersApi.create(activeBusinessId, {
+      await customersApi.create(activeBusinessId, {
         firstName: input.firstName.trim(),
         lastName:  input.lastName.trim(),
         phones:    [{ phone, isPrimary: true }],
       })
-      setCustomers(prev => [created, ...prev])
+      /* Re-read from the server with the existing fetch so the created
+         record — normalized phone, generated id, timestamps — is what the
+         list shows. The GET is the source of truth; do not hand-insert the
+         POST response. Await it before closing so the modal never returns
+         to a stale list. */
+      await refresh()
       setShowModal(false)
       toast.success('Customer added')
-      void refresh()
     } catch (err) {
       console.error('[customers] create failed', err)
       toast.error(extractErrorMessage(err, 'Could not add the customer.'))
