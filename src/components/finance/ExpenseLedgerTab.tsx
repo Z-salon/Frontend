@@ -5,7 +5,7 @@ import { EmptyState, LoadingState } from '../ui/EmptyState'
 import { useExpenses } from '../../hooks/useExpenses'
 import { useExpenseCategories } from '../../hooks/useExpenseCategories'
 import { usePaymentMethods } from '../../hooks/usePaymentMethods'
-import { formatMoney } from '../../lib/money'
+import { centsToInput, formatMoney, toCents } from '../../lib/money'
 import { formatExpenseDay } from '../../lib/dates'
 import { ExpenseStatusBadge, EXPENSE_STATUSES, expenseStatusLabel } from './expenseStatus'
 import { ExpenseFormModal } from './ExpenseFormModal'
@@ -59,6 +59,13 @@ function pageNumbers(current: number, total: number): Array<number | '…'> {
     prev = p
   }
   return out
+}
+
+/** Outstanding is derived from the server's `amount` / `amountPaid`, never
+ *  tracked as separate client state. */
+function outstandingAmount(expense: Expense): string {
+  const cents = Math.max(0, toCents(expense.amount) - toCents(expense.amountPaid))
+  return formatMoney(centsToInput(cents))
 }
 
 function FilterSelect({
@@ -373,10 +380,13 @@ export function ExpenseLedgerTab({
                 <tr className="border-b border-line">
                   <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Date</th>
                   <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Description</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Vendor</th>
                   <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Category</th>
                   <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Branch</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Status</th>
                   <th className="text-right px-5 py-3 text-xs font-semibold text-ink-3">Amount</th>
+                  <th className="text-right px-5 py-3 text-xs font-semibold text-ink-3">Amount Paid</th>
+                  <th className="text-right px-5 py-3 text-xs font-semibold text-ink-3">Outstanding</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Status</th>
                 </tr>
               </thead>
               <tbody className={loading ? 'opacity-60' : ''}>
@@ -391,19 +401,27 @@ export function ExpenseLedgerTab({
                     </td>
                     <td className="px-5 py-3 text-ink font-medium max-w-[260px]">
                       <span className="block truncate">{e.description?.trim() || '—'}</span>
-                      {e.vendor && (
-                        <span className="block text-xs text-ink-3 truncate">{e.vendor}</span>
-                      )}
+                    </td>
+                    <td className="px-5 py-3 text-ink-2 text-sm max-w-[200px]">
+                      <span className="block truncate">{e.vendor ?? '—'}</span>
                     </td>
                     <td className="px-5 py-3 text-ink-2 text-sm">
                       {e.category?.name ?? '—'}
                     </td>
                     <td className="px-5 py-3 text-ink-2 text-sm">{e.branch?.name ?? '—'}</td>
-                    <td className="px-5 py-3">
-                      <ExpenseStatusBadge status={e.status} />
-                    </td>
                     <td className="px-5 py-3 text-right font-semibold text-ink tabular-nums whitespace-nowrap">
                       {formatMoney(e.amount)} ETB
+                    </td>
+                    <td className="px-5 py-3 text-right text-ink-2 tabular-nums whitespace-nowrap">
+                      {formatMoney(e.amountPaid)} ETB
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums whitespace-nowrap">
+                      <span className="text-[#B06A6A] font-medium">
+                        {outstandingAmount(e)} ETB
+                      </span>
+                    </td>
+                    <td className="px-5 py-3">
+                      <ExpenseStatusBadge status={e.status} />
                     </td>
                   </tr>
                 ))}

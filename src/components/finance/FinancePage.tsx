@@ -152,6 +152,9 @@ export function FinancePage({
         )}
         {tab === 'transactions' && (
           <TransactionsTab
+            businessId={businessId ?? activeBusinessId ?? undefined}
+            branches={branchList}
+            onManageCategories={() => setTab('categories')}
             transactions={filtered}
             allTransactions={transactions}
             onUpdate={onUpdateTransactions}
@@ -205,7 +208,33 @@ export function FinancePage({
 
 // ─── Transactions Tab ─────────────────────────────────────────────────────────
 
-function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMethods }: {
+type TransactionsView =
+  | 'expenses'
+  | 'refunds'
+  | 'all'
+  | 'revenue'
+  | 'adjustment'
+
+const TX_VIEWS: { id: TransactionsView; label: string }[] = [
+  { id: 'all',        label: 'All'        },
+  { id: 'expenses',   label: 'Expenses'   },
+  { id: 'refunds',    label: 'Refunds'    },
+  { id: 'revenue',    label: 'Revenue'    },
+  { id: 'adjustment', label: 'Adjustment' },
+]
+
+function TransactionsTab({
+  businessId,
+  branches,
+  onManageCategories,
+  transactions,
+  allTransactions,
+  onUpdate,
+  paymentMethods,
+}: {
+  businessId?: string
+  branches: Array<{ id: string; name: string }>
+  onManageCategories?: () => void
   transactions: Transaction[]
   allTransactions: Transaction[]
   onUpdate: (t: Transaction[]) => void
@@ -213,87 +242,105 @@ function TransactionsTab({ transactions, allTransactions, onUpdate, paymentMetho
 }) {
   const [selected, setSelected] = useState<Transaction | null>(null)
   const [showAdd,  setShowAdd]  = useState(false)
-  const [filterType, setFilterType] = useState<'all' | 'revenue' | 'expense' | 'refund' | 'adjustment'>('all')
+  const [view, setView] = useState<TransactionsView>('expenses')
 
-  const visible = transactions.filter(t => filterType === 'all' || t.type === filterType)
+  /* The first two tabs are the real, backend-backed views; the rest keep the
+     legacy mock ledger available. */
+  const isLegacy = view !== 'expenses' && view !== 'refunds'
+
+  const visible = transactions.filter(t => view === 'all' || t.type === view)
     .sort((a, b) => b.date.localeCompare(a.date))
 
   return (
-    <div className="flex gap-6">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-1">
-            {(['all','revenue','expense','refund','adjustment'] as const).map(t => (
-              <button key={t} onClick={() => setFilterType(t)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all capitalize ${filterType === t ? 'bg-ink text-surface' : 'text-ink-3 hover:text-ink hover:bg-warm-subtle'}`}>
-                {t === 'all' ? 'All' : t}
-              </button>
-            ))}
-          </div>
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1">
+          {TX_VIEWS.map(t => (
+            <button key={t.id} onClick={() => setView(t.id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${view === t.id ? 'bg-ink text-surface' : 'text-ink-3 hover:text-ink hover:bg-warm-subtle'}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {isLegacy && (
           <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Revenue</Button>
-        </div>
-
-        <div className="bg-surface rounded-2xl border border-line overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line">
-                <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Date</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Description</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Customer</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Branch</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Payment</th>
-                <th className="text-right px-5 py-3 text-xs font-semibold text-ink-3">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.length === 0 && (
-                <tr><td colSpan={6} className="py-10 text-center text-ink-3 text-sm">No transactions found.</td></tr>
-              )}
-              {visible.map(t => (
-                <tr key={t.id} onClick={() => setSelected(prev => prev?.id === t.id ? null : t)}
-                  className={`border-b border-line last:border-0 cursor-pointer transition-colors ${selected?.id === t.id ? 'bg-warm-subtle' : 'hover:bg-bg'}`}>
-                  <td className="px-5 py-3 text-ink-3 text-xs whitespace-nowrap">{t.date}</td>
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-2">
-                      <TxTypeDot type={t.type} />
-                      <span className="text-ink font-medium">{t.description}</span>
-                    </div>
-                    <span className="text-xs text-ink-3">{t.category}</span>
-                  </td>
-                  <td className="px-5 py-3 text-ink-2 text-sm">{t.customerName ?? '—'}</td>
-                  <td className="px-5 py-3 text-ink-2 text-sm">{t.branchName}</td>
-                  <td className="px-5 py-3 text-ink-3 text-sm">{t.paymentMethod}</td>
-                  <td className="px-5 py-3 text-right">
-                    <span className={`font-semibold ${t.type === 'revenue' ? 'text-[#2A6139]' : t.type === 'expense' ? 'text-ink' : 'text-[#B06A6A]'}`}>
-                      {t.type === 'revenue' ? '+' : '−'}{fmt(t.amount)}
-                    </span>
-                    {t.paymentStatus === 'partial' && (
-                      <p className="text-[10px] text-[#7A5F2C]">Partial ({fmt(t.amountPaid ?? 0)} paid)</p>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        )}
       </div>
 
-      {selected && (
-        <TxDetailPanel
-          tx={selected}
-          allTransactions={allTransactions}
-          onClose={() => setSelected(null)}
-          onUpdate={onUpdate}
-          paymentMethods={paymentMethods}
+      {view === 'expenses' ? (
+        <ExpenseLedgerTab
+          businessId={businessId}
+          branches={branches}
+          onManageCategories={onManageCategories}
         />
-      )}
+      ) : view === 'refunds' ? (
+        <FinanceRefundsTab businessId={businessId} branches={branches} />
+      ) : (
+        <div className="flex gap-6">
+          <div className="flex-1 min-w-0">
+            <div className="bg-surface rounded-2xl border border-line overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-line">
+                    <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Date</th>
+                    <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Description</th>
+                    <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Customer</th>
+                    <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Branch</th>
+                    <th className="text-left px-5 py-3 text-xs font-semibold text-ink-3">Payment</th>
+                    <th className="text-right px-5 py-3 text-xs font-semibold text-ink-3">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.length === 0 && (
+                    <tr><td colSpan={6} className="py-10 text-center text-ink-3 text-sm">No transactions found.</td></tr>
+                  )}
+                  {visible.map(t => (
+                    <tr key={t.id} onClick={() => setSelected(prev => prev?.id === t.id ? null : t)}
+                      className={`border-b border-line last:border-0 cursor-pointer transition-colors ${selected?.id === t.id ? 'bg-warm-subtle' : 'hover:bg-bg'}`}>
+                      <td className="px-5 py-3 text-ink-3 text-xs whitespace-nowrap">{t.date}</td>
+                      <td className="px-5 py-3">
+                        <div className="flex items-center gap-2">
+                          <TxTypeDot type={t.type} />
+                          <span className="text-ink font-medium">{t.description}</span>
+                        </div>
+                        <span className="text-xs text-ink-3">{t.category}</span>
+                      </td>
+                      <td className="px-5 py-3 text-ink-2 text-sm">{t.customerName ?? '—'}</td>
+                      <td className="px-5 py-3 text-ink-2 text-sm">{t.branchName}</td>
+                      <td className="px-5 py-3 text-ink-3 text-sm">{t.paymentMethod}</td>
+                      <td className="px-5 py-3 text-right">
+                        <span className={`font-semibold ${t.type === 'revenue' ? 'text-[#2A6139]' : t.type === 'expense' ? 'text-ink' : 'text-[#B06A6A]'}`}>
+                          {t.type === 'revenue' ? '+' : '−'}{fmt(t.amount)}
+                        </span>
+                        {t.paymentStatus === 'partial' && (
+                          <p className="text-[10px] text-[#7A5F2C]">Partial ({fmt(t.amountPaid ?? 0)} paid)</p>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-      {showAdd && (
-        <AddRevenueModal
-          onClose={() => setShowAdd(false)}
-          paymentMethods={paymentMethods}
-          onAdd={tx => onUpdate([...allTransactions, tx])}
-        />
+          {selected && (
+            <TxDetailPanel
+              tx={selected}
+              allTransactions={allTransactions}
+              onClose={() => setSelected(null)}
+              onUpdate={onUpdate}
+              paymentMethods={paymentMethods}
+            />
+          )}
+
+          {showAdd && (
+            <AddRevenueModal
+              onClose={() => setShowAdd(false)}
+              paymentMethods={paymentMethods}
+              onAdd={tx => onUpdate([...allTransactions, tx])}
+            />
+          )}
+        </div>
       )}
     </div>
   )
