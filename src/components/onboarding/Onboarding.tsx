@@ -196,6 +196,31 @@ function extractErrorMessage(err: unknown, fallback = 'Something went wrong.'): 
   return fallback
 }
 
+/**
+ * A Google Maps link is accepted in any of the common shapes:
+ *   - https://www.google.com/maps/...
+ *   - https://maps.google.com/...
+ *   - https://maps.app.goo.gl/...
+ *   - https://goo.gl/maps/...
+ */
+function isGoogleMapsLink(value: string): boolean {
+  if (!value) return false
+  const v = value.trim()
+  if (!/^https?:\/\//i.test(v)) return false
+  try {
+    const url = new URL(v)
+    const host = url.hostname.toLowerCase()
+    return (
+      host === 'google.com' ||
+      host.endsWith('.google.com') ||
+      host === 'goo.gl' ||
+      host.endsWith('.goo.gl')
+    )
+  } catch {
+    return false
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Custom Dropdown                                                    */
 /* ------------------------------------------------------------------ */
@@ -508,6 +533,97 @@ function NumberField({
 }
 
 /* ------------------------------------------------------------------ */
+/*  GoogleMapsLinkField                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A text field that ONLY accepts a Google Maps URL (google.com/maps,
+ * maps.app.goo.gl, goo.gl/maps, etc.). Any other input is rejected
+ * with a red border and an inline error — the committed `value` stays
+ * empty until a valid link is pasted.
+ */
+function GoogleMapsLinkField({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  disabled?: boolean
+}) {
+  const [draft, setDraft] = useState(value)
+  const [touched, setTouched] = useState(false)
+
+  // Keep local draft in sync if parent resets value externally.
+  useEffect(() => { setDraft(value) }, [value])
+
+  const trimmed = draft.trim()
+  const isEmpty = trimmed === ''
+  const isValid = !isEmpty && isGoogleMapsLink(trimmed)
+  const showError = touched && !isEmpty && !isValid
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const next = e.target.value
+    setDraft(next)
+    const t = next.trim()
+    // Only push a value up once it's a valid Google Maps link.
+    if (t === '' || isGoogleMapsLink(t)) {
+      onChange(t)
+    } else {
+      onChange('')
+    }
+  }
+
+  function handleBlur() {
+    setTouched(true)
+    // If the user leaves an invalid value in the box, clear the field
+    // entirely so they can't smuggle bad data through.
+    if (trimmed !== '' && !isGoogleMapsLink(trimmed)) {
+      setDraft('')
+      onChange('')
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-medium text-ink-2">{label}</label>
+      <input
+        type="url"
+        inputMode="url"
+        value={draft}
+        disabled={disabled}
+        placeholder="https://maps.app.goo.gl/..."
+        onChange={handleChange}
+        onBlur={handleBlur}
+        autoComplete="off"
+        spellCheck={false}
+        className={`
+          h-10 w-full px-3 rounded-[10px] border text-sm bg-surface text-ink
+          focus:outline-none transition-colors
+          ${showError
+            ? 'border-[#D4A5A5] focus:border-[#B06A6A]'
+            : 'border-line focus:border-ink-3'}
+        `}
+      />
+      {showError ? (
+        <p className="text-xs text-[#B06A6A]">
+          Only Google Maps links are allowed.
+        </p>
+      ) : value ? (
+        <p className="text-xs text-ink-3">Google Maps link accepted.</p>
+      ) : (
+        <p className="text-xs text-ink-3">
+          Paste a Google Maps link, e.g.{' '}
+          <span className="text-ink-2">https://maps.app.goo.gl/…</span>
+        </p>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  StorefrontPreview                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -758,12 +874,18 @@ export function OnboardingWizard({ onComplete }: OnboardingProps) {
     return true
   }
 
-  async function saveBranchesAndNext() {
+  /**
+   * Step 1 — create every branch that doesn't yet have a `serverId`.
+   * Accepts an optional `extra` branch that the user typed but didn't
+   * explicitly "Add" before pressing Continue.
+   */
+  async function saveBranchesAndNext(extra?: BranchDraft) {
     if (!guard()) return
+    const allBranches = extra ? [...branches, extra] : branches
     setSaving(true)
     try {
       const saved: BranchDraft[] = []
-      for (const b of branches) {
+      for (const b of allBranches) {
         if (b.serverId) { saved.push(b); continue }
         const created = await branchesApi.create(activeBusinessId!, {
           name: b.name,
@@ -856,12 +978,18 @@ export function OnboardingWizard({ onComplete }: OnboardingProps) {
     }
   }
 
-  async function saveCategoriesAndNext() {
+  /**
+   * Step 4 — create every category that doesn't yet have a `serverId`.
+   * Accepts an optional `extra` category the user typed but didn't
+   * explicitly "Add" before pressing Continue.
+   */
+  async function saveCategoriesAndNext(extra?: CategoryDraft) {
     if (!guard()) return
+    const allCategories = extra ? [...categories, extra] : categories
     setSaving(true)
     try {
       const saved: CategoryDraft[] = []
-      for (const c of categories) {
+      for (const c of allCategories) {
         if (c.serverId) { saved.push(c); continue }
 
         const branchIds = c.branchKeys
@@ -1141,14 +1269,18 @@ function StepBranches({
   branches: BranchDraft[]
   onChange: (b: BranchDraft[]) => void
   businessTimezone: string
-  onNext: () => void
+  onNext: (extra?: BranchDraft) => void
   onBack: () => void
   saving: boolean
 }) {
   const [draft, setDraft] = useState({ name: '', address: '' })
 
+  const draftAddressValid = isGoogleMapsLink(draft.address)
+  const draftNameValid = draft.name.trim() !== ''
+  const draftValid = draftNameValid && draftAddressValid
+
   function add() {
-    if (!draft.name.trim() || !draft.address.trim()) return
+    if (!draftNameValid || !draftAddressValid) return
     onChange([
       ...branches,
       {
@@ -1165,7 +1297,27 @@ function StepBranches({
     onChange(branches.filter(b => b.key !== key))
   }
 
-  const hasAtLeastOne = branches.length >= 1
+  /**
+   * If the user typed a complete branch but never clicked "Add branch",
+   * flush it to the parent as part of the Continue action. A partial
+   * draft (only name, or invalid address) can't be saved.
+   */
+  function handleNext() {
+    const name = draft.name.trim()
+    const address = draft.address.trim()
+    if (name && isGoogleMapsLink(address)) {
+      onNext({
+        key: `br-${Date.now()}`,
+        name,
+        address,
+        timezone: businessTimezone,
+      })
+    } else {
+      onNext()
+    }
+  }
+
+  const hasAtLeastOne = branches.length >= 1 || draftValid
 
   return (
     <div>
@@ -1182,14 +1334,21 @@ function StepBranches({
 
         {branches.map(b => (
           <div key={b.key} className="px-4 py-3 rounded-xl bg-surface border border-line flex items-center justify-between">
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-medium text-ink">{b.name}</p>
-              <p className="text-xs text-ink-3 mt-0.5">{b.address}</p>
+              <a
+                href={b.address}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-ink-3 mt-0.5 truncate block max-w-[20rem] hover:text-ink-2 underline"
+              >
+                {b.address}
+              </a>
             </div>
             <button
               onClick={() => remove(b.key)}
               disabled={saving}
-              className="text-xs text-ink-3 hover:text-[#C47B7B] transition-colors disabled:opacity-50"
+              className="text-xs text-ink-3 hover:text-[#C47B7B] transition-colors disabled:opacity-50 flex-shrink-0 ml-3"
             >
               Remove
             </button>
@@ -1204,17 +1363,16 @@ function StepBranches({
             placeholder="Piassa Branch"
             onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
           />
-          <Input
-            label="Address"
+          <GoogleMapsLinkField
+            label="Google Maps link"
             value={draft.address}
-            placeholder="Piassa, Addis Ababa"
-            onChange={e => setDraft(d => ({ ...d, address: e.target.value }))}
+            onChange={address => setDraft(d => ({ ...d, address }))}
           />
           <div className="flex justify-end">
             <Button
               variant="secondary"
               onClick={add}
-              disabled={!draft.name.trim() || !draft.address.trim() || saving}
+              disabled={!draftValid || saving}
             >
               Add branch
             </Button>
@@ -1229,7 +1387,7 @@ function StepBranches({
       </div>
       <StepNav
         onBack={onBack}
-        onNext={onNext}
+        onNext={handleNext}
         nextLabel="Continue"
         disabled={!hasAtLeastOne}
         saving={saving}
@@ -1480,7 +1638,7 @@ function StepCategories({
   categories: CategoryDraft[]
   branches: BranchDraft[]
   onChange: (c: CategoryDraft[]) => void
-  onNext: () => void
+  onNext: (extra?: CategoryDraft) => void
   onBack: () => void
   saving: boolean
 }) {
@@ -1507,6 +1665,25 @@ function StepCategories({
       },
     ])
     setDraft({ name: '', description: '', branchKeys: [] })
+  }
+
+  /**
+   * If the user typed a category name but never clicked "Add category",
+   * flush it to the parent as part of the Continue action. Only the name
+   * is required (matching the `add()` guard above).
+   */
+  function handleNext() {
+    const name = draft.name.trim()
+    if (name) {
+      onNext({
+        key: `cat-${Date.now()}`,
+        name,
+        description: draft.description.trim(),
+        branchKeys: draft.branchKeys,
+      })
+    } else {
+      onNext()
+    }
   }
 
   return (
@@ -1578,7 +1755,7 @@ function StepCategories({
           </div>
         </div>
       </div>
-      <StepNav onBack={onBack} onNext={onNext} saving={saving} />
+      <StepNav onBack={onBack} onNext={handleNext} saving={saving} />
     </div>
   )
 }
