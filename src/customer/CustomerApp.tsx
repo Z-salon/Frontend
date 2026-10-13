@@ -28,7 +28,7 @@ const routes: Route[] = [
     render: ({ businessId }) => <Booking businessId={businessId} />,
   },
   {
-    path: '/confirm/:token',
+    path: '/appointments/confirm/:token',
     render: ({ token }) => <Confirmation token={token} />,
   },
   {

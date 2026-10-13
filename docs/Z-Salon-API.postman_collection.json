@@ -1,10 +1,10 @@
 {
   "info": {
     "_postman_id": "b7f1c2de-4a10-4d3e-9c77-0f4a52b6e9a1",
-    "name": "Z-Salon API — Appointments & Management",
-    "description": "Postman collection for the Z-Salon multi-tenant salon backend.\n\nCovers: Branch Management, Customers, Appointments (walk-in, phone/staff, online), Availability, Service Usage, Appointment Payments, Payment Receipts, Refunds, Customer Appointments, and Public Booking.\n\n## Setup\n1. Set `baseUrl` and `businessId` in collection variables.\n2. Run **Auth › Login** first — it captures `accessToken` automatically.\n3. Create a branch / customer / service / staff, then capture their IDs from responses (scripts are included on key requests).\n\n## Time Handling\n- All datetimes in request bodies must be **ISO 8601** (e.g. `2026-09-24T09:00:00.000+03:00` — Ethiopia is GMT+3 / Africa/Addis_Ababa).\n- Availability `date` params are plain **YYYY-MM-DD**, interpreted in the **branch timezone**.\n- Responses return ISO 8601 UTC (`Z`); availability responses also echo the branch `timezone` and offset-based slot times.\n- Client-supplied `scheduledEnd` is ignored — duration comes from the service config.\n\nFull reference: `docs/ENDPOINTS-GUIDE.md`.",
+    "name": "Se'ert API — Appointments & Management",
+    "description": "Postman collection for the Se'ert multi-tenant salon backend.\n\nCovers: Branch Management, Customers, Appointments (walk-in, phone/staff, online), Availability, Service Usage, Appointment Payments, Payment Receipts, Refunds, Customer Appointments, and Public Booking.\n\n## Setup\n1. Set `baseUrl` and `businessId` in collection variables.\n2. Run **Auth › Login** first — it captures `accessToken` automatically.\n3. Create a branch / customer / service / staff, then capture their IDs from responses (scripts are included on key requests).\n\n## Time Handling\n- All datetimes in request bodies must be **ISO 8601** (e.g. `2026-09-24T09:00:00.000+03:00` — Ethiopia is GMT+3 / Africa/Addis_Ababa).\n- Availability `date` params are plain **YYYY-MM-DD**, interpreted in the **branch timezone**.\n- Responses return ISO 8601 UTC (`Z`); availability responses also echo the branch `timezone` and offset-based slot times.\n- Client-supplied `scheduledEnd` is ignored — duration comes from the service config.\n\nFull reference: `docs/ENDPOINTS-GUIDE.md`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "_exporter_id": "z-salon-backend"
+    "_exporter_id": "Se'ert-backend"
   },
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:3000/api/v1", "type": "string" },

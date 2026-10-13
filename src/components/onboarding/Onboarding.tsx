@@ -648,7 +648,7 @@ function StorefrontPreview({
         <span className="w-2.5 h-2.5 rounded-full bg-[#C8DBC8]" />
         <div className="flex-1 mx-3 h-6 rounded-md bg-surface border border-line flex items-center px-2">
           <span className="text-[10px] text-ink-3 truncate">
-            z-salon.com/{salonName.toLowerCase().replace(/\s+/g, '-')}
+            Se'ert.com/{salonName.toLowerCase().replace(/\s+/g, '-')}
           </span>
         </div>
       </div>
@@ -1134,8 +1134,8 @@ export function OnboardingWizard({ onComplete }: OnboardingProps) {
     <div className="min-h-screen bg-bg flex flex-col">
       <div className="flex items-center justify-between px-8 py-5 border-b border-line bg-surface">
         <div>
-          <span className="font-display text-xl text-ink">Z-salon</span>
-          <span className="text-warm font-display italic text-base ml-2">ዘsalon</span>
+          <span className="font-display text-xl text-ink">Se'ert</span>
+          {/* <span className="text-warm font-display italic text-base ml-2">ዘsalon</span> */}
         </div>
         {step < TOTAL_STEPS - 1 && (
           <span className="text-sm text-ink-3">Step {step + 1} of {TOTAL_STEPS - 1}</span>
@@ -2175,7 +2175,7 @@ function StepComplete({
       </div>
 
       <h2 className="font-display text-4xl text-ink mb-2">Your salon is ready.</h2>
-      <p className="text-ink-3 text-base mb-10">Welcome to Z-salon.</p>
+      <p className="text-ink-3 text-base mb-10">Welcome to Se'ert.</p>
 
       <div className="text-left bg-surface rounded-2xl border border-line divide-y divide-line mb-10 max-w-sm mx-auto">
         <div className="flex items-center justify-between px-5 py-4">
@@ -2202,7 +2202,7 @@ function StepComplete({
         </div>
       </div>
 
-      <Button size="lg" onClick={onEnter}>Enter Z-salon</Button>
+      <Button size="lg" onClick={onEnter}>Enter Se'ert</Button>
     </div>
   )
 }

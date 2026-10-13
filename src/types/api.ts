@@ -757,6 +757,18 @@ export interface Appointment {
   completedAt?: string | null;
   cancelledAt?: string | null;
   noShowAt?: string | null;
+
+  /* ---- Reminder / follow-up (present on single-get responses) ---- */
+
+  /** Whether an OPEN staff follow-up is required. */
+  needsFollowUp?: boolean;
+  /** Current OPEN follow-up for this appointment, if any. */
+  followUp?: AppointmentFollowUp | null;
+  /**
+   * Reminder history. Present on the single-get response; the dedicated
+   * `/reminders` endpoint returns the same shape.
+   */
+  reminders?: AppointmentReminder[];
 }
 
 // ============================================================
@@ -867,13 +879,39 @@ export interface AppointmentPaymentsInput {
   notes?: string | null
 }
 
-// ------------------------------------------------------------------
-//  §12 Feedback
-// ------------------------------------------------------------------
+// ============================================================
+// §12 Feedback
+// ============================================================
 
 export type FeedbackCategoryType = 'RATING' | 'TEXT' | 'BOOLEAN'
 
-export type FeedbackRequestStatus = 'PENDING' | 'SUBMITTED' | 'EXPIRED'
+/**
+ * Request lifecycle status (§12 — Data Models & Enums).
+ *
+ *   PENDING   — awaiting customer submission
+ *   SUBMITTED — feedback received (terminal)
+ *   EXPIRED   — token expired (lazy transition)
+ *   REVOKED   — revoked by admin (terminal)
+ */
+export type FeedbackRequestStatus =
+  | 'PENDING'
+  | 'SUBMITTED'
+  | 'EXPIRED'
+  | 'REVOKED'
+
+/**
+ * Business-level expiry configuration (§12 — FeedbackExpiryMode).
+ */
+export type FeedbackExpiryMode =
+  | 'DAYS_7'
+  | 'DAYS_15'
+  | 'DAYS_30'
+  | 'CUSTOM'
+  | 'NEVER'
+
+/* ------------------------------------------------------------------ */
+/*  Public — feedback form (GET /feedback/{token})                    */
+/* ------------------------------------------------------------------ */
 
 /**
  * A feedback category as exposed on the customer-facing form
@@ -900,14 +938,19 @@ export interface FeedbackFormBusiness {
 /**
  * `GET /feedback/{token}` — the public feedback form. Only enabled
  * categories are returned. No customer identity is exposed.
+ *
+ * `expires_at` is `null` when the business uses `NEVER` expiry mode.
  */
 export interface FeedbackFormResponse {
   request_id: string
-  /** ISO 8601. The request expires 7 days after creation. */
-  expires_at: string
+  expires_at: string | null
   business: FeedbackFormBusiness
   categories: FeedbackFormCategory[]
 }
+
+/* ------------------------------------------------------------------ */
+/*  Public — submit (POST /feedback/submit)                           */
+/* ------------------------------------------------------------------ */
 
 /**
  * `POST /feedback/submit` input.
@@ -926,7 +969,14 @@ export type FeedbackResponseInput =
 
 export interface FeedbackSubmitInput {
   token: string
-  is_anonymous: boolean
+  /** Default `false`. When `true`, admin views hide customer/appointment. */
+  is_anonymous?: boolean
+  /**
+   * Optional client-generated key for safe retries. Can also be sent
+   * as the `Idempotency-Key` header (header takes precedence).
+   */
+  idempotency_key?: string
+  /** At least 1, max 50. Duplicate `category_id` values are rejected. */
   responses: FeedbackResponseInput[]
 }
 
@@ -938,61 +988,76 @@ export interface FeedbackSubmitResponse {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Admin-side shapes                                                  */
+/*  Admin — categories                                                */
 /* ------------------------------------------------------------------ */
 
 /**
  * A feedback category as returned by the admin list endpoint
  * (`GET /businesses/{id}/feedback-categories`).
  *
- * NOTE: unlike the form payload, admin endpoints return camelCase
- * field names (matching the rest of the admin API).
+ * The API reference (§12.6 example) shows snake_case field names,
+ * matching the customer form payload.
  */
 export interface FeedbackCategory {
   id: string
-  businessId: string
+  business_id: string
   name: string
   description: string | null
   type: FeedbackCategoryType
-  ratingScaleMin: number | null
-  ratingScaleMax: number | null
-  sortOrder: number
-  isEnabled: boolean
+  rating_scale_min: number | null
+  rating_scale_max: number | null
+  sort_order: number
+  is_enabled: boolean
   /** Number of responses received for this category. */
-  responseCount: number
-  createdAt: string
-  updatedAt: string
+  response_count: number
+  created_at: string
+  updated_at: string
 }
 
 export interface FeedbackCategoryInput {
   name: string
   type: FeedbackCategoryType
-  description?: string
+  description?: string | null
+  /** Required for RATING (0–10). Must be `null` otherwise. */
   ratingScaleMin?: number | null
+  /** Required for RATING (> ratingScaleMin, 0–10). Must be `null` otherwise. */
   ratingScaleMax?: number | null
+  /** Default `true`. */
+  isEnabled?: boolean
+  /** Default `0`, range 0–1000. */
   sortOrder?: number
 }
 
 export interface FeedbackCategoryUpdateInput {
   name?: string
   description?: string | null
+  /**
+   * Immutable once the category has responses (409
+   * FEEDBACK_CATEGORY_IMMUTABLE). The server also enforces the same
+   * rules as create for RATING-only fields.
+   */
   ratingScaleMin?: number | null
   ratingScaleMax?: number | null
   sortOrder?: number
+  /** Set `false` to disable without deleting. */
   isEnabled?: boolean
 }
+
+/* ------------------------------------------------------------------ */
+/*  Admin — submissions                                               */
+/* ------------------------------------------------------------------ */
 
 /**
  * A single admin-side feedback submission.
  *
- * Privacy contract (§12.4): when `isAnonymous` is `true`, both
+ * Privacy contract (§12.4): when `is_anonymous` is `true`, both
  * `customer` and `appointment` are `null` server-side — no
  * identifying context leaks.
  */
 export interface FeedbackSubmission {
   id: string
-  isAnonymous: boolean
-  submittedAt: string
+  is_anonymous: boolean
+  submitted_at: string
   customer: FeedbackSubmissionCustomer | null
   appointment: FeedbackSubmissionAppointment | null
   responses: FeedbackSubmissionResponse[]
@@ -1000,43 +1065,63 @@ export interface FeedbackSubmission {
 
 export interface FeedbackSubmissionCustomer {
   id: string
-  firstName: string
-  lastName: string
+  first_name: string
+  last_name: string
   phone: string | null
 }
 
 export interface FeedbackSubmissionAppointment {
   id: string
-  scheduledStart: string
-  scheduledEnd: string
+  scheduled_start: string
+  scheduled_end: string
   status: AppointmentStatus
   branch: { id: string; name: string } | null
   service: { id: string; name: string } | null
-  staff: Array<{ id: string; firstName: string; lastName: string }>
+  staff: Array<{ id: string; first_name: string; last_name: string }>
 }
 
 export interface FeedbackSubmissionResponse {
   id: string
-  categoryId: string
   category: { id: string; name: string; type: FeedbackCategoryType }
-  ratingValue: number | null
-  textResponse: string | null
-  booleanResponse: boolean | null
+  rating_value: number | null
+  text_response: string | null
+  boolean_response: boolean | null
+  answered_at: string
 }
 
 /* ------------------------------------------------------------------ */
-/*  Admin — resend feedback request (proposed)                         */
+/*  Admin — paginated list envelope                                   */
+/* ------------------------------------------------------------------ */
+
+export interface FeedbackListMeta {
+  total: number
+  page: number
+  limit: number
+  totalPages: number
+}
+
+/**
+ * `GET /businesses/{businessId}/feedback` returns a paginated envelope.
+ * The previous `FeedbackSubmission[]` typing dropped the `meta` block.
+ */
+export interface FeedbackListResponse {
+  data: FeedbackSubmission[]
+  meta: FeedbackListMeta
+}
+
+/* ------------------------------------------------------------------ */
+/*  Admin — resend feedback request (PROPOSED)                        */
 /* ------------------------------------------------------------------ */
 
 /**
  * `POST /businesses/{businessId}/appointments/{appointmentId}/feedback-request/resend`
  *
  * Re-mints the token and re-delivers the link. See
- * `docs/FEEDBACK-RESEND-PROPOSAL.md` — this endpoint is not implemented yet,
- * so the admin button surfaces the error until it ships.
+ * `docs/FEEDBACK-RESEND-PROPOSAL.md` — this endpoint is not implemented
+ * yet, so the admin button surfaces the error until it ships.
  *
- * Only the raw token ever exists in this response; the server keeps just its
- * SHA-256 hash.
+ * Only the raw token ever exists in this response; the server keeps
+ * just its SHA-256 hash.
  */
 export interface FeedbackResendResult {
   request_id: string
@@ -1050,7 +1135,7 @@ export interface FeedbackResendResult {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Admin list query                                                   */
+/*  Admin — list query                                                */
 /* ------------------------------------------------------------------ */
 
 export interface FeedbackListQuery {
@@ -1064,6 +1149,24 @@ export interface FeedbackListQuery {
   branch_id?: string
   category_id?: string
   is_anonymous?: boolean
+}
+
+/* ------------------------------------------------------------------ */
+/*  §12 — Feedback settings (admin)                                   */
+/* ------------------------------------------------------------------ */
+
+export interface FeedbackSettings {
+  business_id: string
+  feedback_enabled: boolean
+  feedback_expiry_mode: FeedbackExpiryMode
+  feedback_custom_expiry_days: number | null
+}
+
+export interface FeedbackSettingsPatch {
+  feedbackEnabled?: boolean
+  feedbackExpiryMode?: FeedbackExpiryMode
+  /** Required when `feedbackExpiryMode === 'CUSTOM'` (1–365). */
+  feedbackCustomExpiryDays?: number | null
 }
 
 // ============================================================
@@ -1102,4 +1205,205 @@ export interface SubmitReceiptInput {
   receiptImageUrl: string
   receiptImagePublicId: string
   customerNote?: string
+}
+
+// ============================================================
+// §Appointment reminders & follow-ups
+// ============================================================
+
+/** Reminder kinds emitted by the confirmation scheduler. */
+export type AppointmentReminderType =
+  | 'ack_first_prompt'
+  | 'ack_second_prompt'
+  | 'ack_deadline'
+
+/** Processing state of a reminder job. */
+export type AppointmentReminderStatus =
+  | 'PENDING'
+  | 'CLAIMED'
+  | 'SENT'
+  | 'FAILED'
+  | 'SKIPPED'
+
+export type AppointmentReminderAttemptStatus =
+  | 'SENT'
+  | 'FAILED'
+  | 'PENDING'
+
+/** One delivery attempt logged against a reminder. */
+export interface AppointmentReminderAttempt {
+  id: string
+  /** ISO 8601. */
+  deliveredAt: string
+  status: AppointmentReminderAttemptStatus
+  providerMessageId: string | null
+  error: string | null
+}
+
+/** A single reminder on an appointment's timeline. */
+export interface AppointmentReminder {
+  id: string
+  type: AppointmentReminderType
+  status: AppointmentReminderStatus
+  /** Bumped on every reschedule so stale worker jobs are skipped. */
+  scheduleVersion: number
+  /** ISO 8601. */
+  scheduledAt: string
+  /** ISO 8601. */
+  dueAt: string
+  leasedAt: string | null
+  leasedUntil: string | null
+  claimedByWorkerId: string | null
+  sentAt: string | null
+  completedAt: string | null
+  lastError: string | null
+  providerMessageId: string | null
+  attempts: AppointmentReminderAttempt[]
+}
+
+/** Response shape of `GET …/appointments/:id/reminders`. */
+export interface AppointmentRemindersResponse {
+  reminders: AppointmentReminder[]
+}
+
+/** Current state of a staff follow-up. */
+export type AppointmentFollowUpStatus = 'OPEN' | 'RESOLVED'
+
+/** Resolved outcomes. `null` while still OPEN. */
+export type AppointmentFollowUpOutcome =
+  | 'CONFIRMED'
+  | 'CANCELLED'
+  | 'RESCHEDULED'
+
+/** A staff follow-up raised when the confirmation deadline passes. */
+export interface AppointmentFollowUp {
+  id: string
+  appointmentId: string
+  /**
+   * Full appointment summary embedded by the list endpoint. May be absent
+   * on some responses (e.g. the resolve response returns just the follow-up).
+   */
+  appointment?: Appointment
+  status: AppointmentFollowUpStatus
+  outcome: AppointmentFollowUpOutcome | null
+  outcomeNote: string | null
+  staffId: string | null
+  /** Present on list responses; resolved server-side. */
+  staffName?: string | null
+  /** ISO 8601. */
+  createdAt: string
+  /** ISO 8601. */
+  resolvedAt: string | null
+  /** ISO 8601 — only set when outcome is RESCHEDULED. */
+  newStartTime: string | null
+}
+
+/** Query parameters for `GET …/appointment-follow-ups`. */
+export interface AppointmentFollowUpQuery {
+  branchId?: string
+  status?: AppointmentFollowUpStatus
+  /** 1-based. Default 1. */
+  page?: number
+  /** Default 20. */
+  limit?: number
+}
+
+/** Response shape of `GET …/appointment-follow-ups`. */
+export interface AppointmentFollowUpList {
+  followUps: AppointmentFollowUp[]
+  total: number
+  page: number
+  limit: number
+  hasMore: boolean
+}
+
+/**
+ * Body for `PATCH …/appointment-follow-ups/:id`.
+ *
+ * `newStartTime` is required when `outcome === 'RESCHEDULED'`; the
+ * discriminated union enforces this at compile time.
+ */
+export type ResolveAppointmentFollowUpInput =
+  | {
+      outcome: 'CONFIRMED'
+      note?: string
+      staffId?: string
+    }
+  | {
+      outcome: 'CANCELLED'
+      note?: string
+      staffId?: string
+    }
+  | {
+      outcome: 'RESCHEDULED'
+      /** ISO 8601. Required. */
+      newStartTime: string
+      note?: string
+      staffId?: string
+    }
+
+/**
+ * Response of the dev-only confirmation-link endpoint.
+ * See `appointmentsApi.confirmationLink`.
+ */
+export interface AppointmentConfirmationLinkResponse {
+  token: string
+  confirmationUrl: string
+}
+
+/* ------------------------------------------------------------------ */
+/*  Customer confirmation flow (§10.4)                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Server-computed capability policy returned alongside the confirmation
+ * view. The page should render buttons from this — not from `status`.
+ */
+export interface ConfirmationActionsPolicy {
+  viewOnly: boolean
+  canConfirm: boolean
+  canCancel: boolean
+  canReschedule: boolean
+}
+
+export interface ConfirmationBranch {
+  name: string
+  address: string | null
+  timezone: string
+  /**
+   * Optional — the confirmation payload currently omits phones, so this
+   * is declared so the page can render them if the backend adds them
+   * later without a type change. Guard any use with `?.` and a length
+   * check.
+   */
+  phones?: BranchPhone[]
+}
+
+export interface ConfirmationService {
+  name: string
+  durationMinutes: number
+}
+
+/**
+ * Response of `GET /api/v1/public/appointments/confirm/:token`.
+ *
+ * Deliberately distinct from the admin `Appointment` shape — the
+ * customer endpoint returns a reduced payload (branch as a nested
+ * object, `staffName` as a flat string, `businessName`, and the
+ * `actions` policy) instead of the full admin projection.
+ */
+export interface ConfirmationView {
+  businessId: string
+  scheduledStart: string
+  scheduledEnd: string
+  status: AppointmentStatus
+  confirmationStatus: CustomerConfirmationStatus
+  customerConfirmedAt: string | null
+  service: ConfirmationService
+  staffName: string | null
+  branch: ConfirmationBranch | null
+  businessName: string
+  notes: string | null
+  totalAmount: string
+  actions: ConfirmationActionsPolicy
 }

@@ -632,6 +632,8 @@ export function RatingInput({
       >
         {options.map(n => {
           const active = value === n
+          const inRange = n <= (value ?? 0)
+
           return useStars ? (
             <button
               key={n}
@@ -641,16 +643,27 @@ export function RatingInput({
               aria-label={`${n} of ${max}`}
               onClick={() => onChange(n)}
               className={`
-                flex h-11 w-11 items-center justify-center rounded-xl border transition-all duration-200
-                focus-ring hover:-translate-y-px
+                flex h-11 w-11 items-center justify-center rounded-xl border
+                transition-all duration-200 focus-ring hover:-translate-y-px
                 ${
                   active
-                    ? 'border-[color:var(--brand-primary)] bg-[color:var(--brand-primary)] text-[color:var(--brand-on-primary)] shadow-[0_8px_20px_-14px_rgba(var(--brand-rgb),0.9)]'
-                    : 'border-line bg-surface text-line hover:border-[color:var(--brand-line)] hover:text-[color:var(--brand-accent)]'
+                    ? 'border-[color:var(--brand-primary)] bg-[color:var(--brand-primary)] shadow-[0_8px_20px_-14px_rgba(var(--brand-rgb),0.9)]'
+                    : inRange
+                      ? 'border-[color:var(--brand-primary)] bg-[color:var(--brand-soft)]'
+                      : 'border-line bg-surface hover:border-[color:var(--brand-line)]'
                 }
               `}
             >
-              <IconStar filled={active || n <= (value ?? 0)} className="h-5 w-5" />
+              <IconStar
+                filled={inRange}
+                className={
+                  active
+                    ? 'h-5 w-5 text-[color:var(--brand-on-primary)]'
+                    : inRange
+                      ? 'h-5 w-5 text-[color:var(--brand-accent)]'
+                      : 'h-5 w-5 text-line hover:text-[color:var(--brand-accent)]'
+                }
+              />
             </button>
           ) : (
             <button
@@ -859,7 +872,7 @@ export function PoweredBy() {
         rel="noreferrer"
         className="focus-ring rounded font-medium text-ink-2 underline decoration-line underline-offset-4 transition-colors hover:text-ink"
       >
-        <span className="text-gold">ዘ</span>Z-Salon
+        <span className="text-gold">ዘ</span>Se'ert
       </a>
     </p>
   )

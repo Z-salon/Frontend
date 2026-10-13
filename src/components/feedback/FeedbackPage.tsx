@@ -3,6 +3,8 @@ import type {
   FeedbackSubmission,
   FeedbackCategory,
   FeedbackCategoryType,
+  FeedbackCategoryInput,
+  FeedbackCategoryUpdateInput,
   Staff as ApiStaff,
   Branch as ApiBranch,
 } from '../../types/api'
@@ -18,6 +20,15 @@ import { staffApi } from '../../api/staff.api'
 /*  Local shape — a flattened view of FeedbackSubmission for the UI    */
 /* ------------------------------------------------------------------ */
 
+interface UiResponse {
+  categoryId: string
+  categoryName: string
+  type: FeedbackCategoryType
+  rating: number | null
+  text: string | null
+  boolean: boolean | null
+}
+
 interface UiFeedback {
   id: string
   anonymous: boolean
@@ -30,22 +41,7 @@ interface UiFeedback {
   branchName: string
   date: string
 
-  overallRating: number
-  staffRating: number
-  experienceRating: number
-  hygieneRating: number
-  serviceQualityRating: number
-  waitingRating: number
-
-  comment: string | null
-
-  extraResponses: Array<{
-    categoryName: string
-    type: FeedbackCategoryType
-    rating: number | null
-    text: string | null
-    boolean: boolean | null
-  }>
+  responses: UiResponse[]
 
   reviewed: boolean
   internalNote: string
@@ -59,13 +55,7 @@ interface FeedbackPageProps {
   staff?: StaffMember[]
   branches?: Branch[]
   onUpdate?: (feedback: UiFeedback[]) => void
-  /**
-   * Submission to open on arrival — set when the user clicks "View response"
-   * on a completed appointment. Fetched by id if the paginated list doesn't
-   * already contain it, then selected and its filters cleared.
-   */
   focusSubmissionId?: string | null
-  /** Fired once the focus has been applied, so the parent can clear it. */
   onFocusHandled?: () => void
 }
 
@@ -79,7 +69,6 @@ export function FeedbackPage({
   const toast = useToast()
   const { activeBusinessId } = useBusiness()
 
-  // Branch context — authoritative branch list + current branch filter.
   const {
     branches: branchesCtx,
     activeBranchId,
@@ -97,7 +86,6 @@ export function FeedbackPage({
     activeBranchId === 'all' ? 'all' : activeBranchId,
   )
 
-  // Keep the branch filter in sync with the app's active branch.
   useEffect(() => {
     setFilterBranch(activeBranchId === 'all' ? 'all' : activeBranchId)
   }, [activeBranchId])
@@ -107,6 +95,8 @@ export function FeedbackPage({
   const [localMeta, setLocalMeta] = useState<
     Record<string, { reviewed: boolean; internalNote: string }>
   >({})
+
+  const [questionsOpen, setQuestionsOpen] = useState(false)
 
   async function refresh() {
     if (!activeBusinessId) return
@@ -136,13 +126,7 @@ export function FeedbackPage({
   }, [activeBusinessId])
 
   /* ---------------------------------------------------------------- */
-  /*  Deep link — open one specific submission                       */
-  /*                                                                  */
-  /*  The list is capped at 100 and sorted newest-first, so an older    */
-  /*  submission can be absent. Fetch it by id instead of silently    */
-  /*  showing nothing. Anonymous responses arrive with `appointment:  */
-  /*  null`, which `normalizeForUi` must already tolerate since the    */
-  /*  list renders them too.                                           */
+  /*  Deep link — open one specific submission                        */
   /* ---------------------------------------------------------------- */
 
   useEffect(() => {
@@ -151,8 +135,6 @@ export function FeedbackPage({
 
     void (async () => {
       try {
-        // Older submissions can fall outside the list's 100-item window,
-        // so fetch this one directly rather than showing nothing.
         if (!submissions.some(x => x.id === focusSubmissionId)) {
           const detail = await feedbackApi.detail(
             activeBusinessId,
@@ -160,11 +142,13 @@ export function FeedbackPage({
           )
           if (cancelled || !detail) return
           const one = unwrapOne<FeedbackSubmission>(detail)
-          if (one) setSubmissions(prev => (prev.some(x => x.id === one.id) ? prev : [one, ...prev]))
+          if (one) {
+            setSubmissions(prev =>
+              prev.some(x => x.id === one.id) ? prev : [one, ...prev],
+            )
+          }
         }
 
-        // Filters are branch/staff-scoped; clear them so the row is visible
-        // and the detail pane doesn't look out of sync with the list.
         setFilterStaff('all')
         setFilterBranch('all')
         setSelectedId(focusSubmissionId)
@@ -183,10 +167,6 @@ export function FeedbackPage({
 
   /* ---------------------------------------------------------------- */
   /*  Fetch staff from the API when the prop is empty.               */
-  /*                                                                  */
-  /*  The branch filter is passed through so the server returns the   */
-  /*  roster for the active branch — that keeps the dropdown scoped   */
-  /*  even when the parent doesn't pass `staff`.                     */
   /* ---------------------------------------------------------------- */
 
   useEffect(() => {
@@ -196,9 +176,11 @@ export function FeedbackPage({
 
     ;(async () => {
       try {
-        const res = await staffApi.list(activeBusinessId, {
-          branchId: activeBranchFilter,
-        })
+        const query =
+          activeBranchFilter && activeBranchFilter !== 'all'
+            ? { branchId: activeBranchFilter }
+            : undefined
+        const res = await staffApi.list(activeBusinessId, query)
         const list = unwrapArray<ApiStaff>(res)
         if (!cancelled) setApiStaff(list)
       } catch (err) {
@@ -209,8 +191,6 @@ export function FeedbackPage({
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBusinessId, staffProp.length, activeBranchFilter])
-
-  void categories
 
   const uiFeedback: UiFeedback[] = useMemo(() => {
     return submissions.map(s => normalizeForUi(s, localMeta[s.id]))
@@ -227,20 +207,43 @@ export function FeedbackPage({
     [uiFeedback, filterStaff, filterBranch],
   )
 
-  const avgOverall = uiFeedback.length
-    ? (uiFeedback.reduce((s, f) => s + f.overallRating, 0) / uiFeedback.length).toFixed(1)
-    : '—'
-  const avgStaff = uiFeedback.length
-    ? (uiFeedback.reduce((s, f) => s + f.staffRating, 0) / uiFeedback.length).toFixed(1)
-    : '—'
-  const avgExp = uiFeedback.length
-    ? (uiFeedback.reduce((s, f) => s + f.experienceRating, 0) / uiFeedback.length).toFixed(1)
-    : '—'
+  /* ---------------------------------------------------------------- */
+  /*  Per-category stats                                              */
+  /* ---------------------------------------------------------------- */
+
+  const categoryStats = useMemo(() => {
+    return categories
+      .filter(c => c.is_enabled && c.type === 'RATING')
+      .map(c => {
+        const ratings = uiFeedback
+          .flatMap(f => f.responses)
+          .filter(r => r.categoryId === c.id && typeof r.rating === 'number')
+          .map(r => r.rating as number)
+
+        const average =
+          ratings.length > 0
+            ? ratings.reduce((s, v) => s + v, 0) / ratings.length
+            : null
+
+        return {
+          categoryId: c.id,
+          name: c.name,
+          average,
+          count: ratings.length,
+        }
+      })
+  }, [categories, uiFeedback])
 
   function staffAvg(staffId: string) {
     const items = uiFeedback.filter(f => f.staffId === staffId)
     if (!items.length) return 0
-    return items.reduce((s, f) => s + f.overallRating, 0) / items.length
+
+    const scores = items
+      .map(f => f.responses.find(r => typeof r.rating === 'number')?.rating)
+      .filter((v): v is number => typeof v === 'number')
+
+    if (!scores.length) return 0
+    return scores.reduce((s, v) => s + v, 0) / scores.length
   }
 
   function markReviewed(id: string) {
@@ -262,17 +265,7 @@ export function FeedbackPage({
   }
 
   /* ---------------------------------------------------------------- */
-  /*  Staff options — 3-tier fallback, scoped to the active branch    */
-  /*                                                                   */
-  /*  When `activeBranchFilter` is set (i.e. the app is on a specific  */
-  /*  branch), each tier is filtered by that branch id:                */
-  /*    • prop entries are filtered by their `branchId` if present     */
-  /*    • API entries carry `branchId` from the server                */
-  /*    • submission-derived entries only include staff whose          */
-  /*      appointment is on that branch (appointments are already      */
-  /*      branch-scoped on the server side, but we double-check)       */
-  /*                                                                   */
-  /*  When the filter is "all", every tier passes through unchanged.   */
+  /*  Staff options                                                   */
   /* ---------------------------------------------------------------- */
 
   const staffOptions = useMemo(() => {
@@ -280,17 +273,13 @@ export function FeedbackPage({
     const seen = new Set<string>()
 
     const matchesBranch = (raw: any): boolean => {
-      if (!activeBranchFilter) return true
-      // API `Staff` and appointment refs carry `branchId` directly.
+      if (!activeBranchFilter || activeBranchFilter === 'all') return true
       if (typeof raw?.branchId === 'string') {
         return raw.branchId === activeBranchFilter
       }
-      // UI `StaffMember` may not carry a branch — treat as match so we
-      // don't hide options the parent explicitly passed in.
       return true
     }
 
-    // 1. UI-shaped prop
     for (const s of staffProp) {
       if (!matchesBranch(s)) continue
       const member = coerceStaff(s)
@@ -299,7 +288,6 @@ export function FeedbackPage({
       out.push(member)
     }
 
-    // 2. API staff
     if (out.length === 0) {
       for (const s of apiStaff) {
         if (!matchesBranch(s)) continue
@@ -310,11 +298,16 @@ export function FeedbackPage({
       }
     }
 
-    // 3. Derived from submissions
     if (out.length === 0) {
       for (const s of submissions) {
         const apptBranchId = s.appointment?.branch?.id
-        if (activeBranchFilter && apptBranchId !== activeBranchFilter) continue
+        if (
+          activeBranchFilter &&
+          activeBranchFilter !== 'all' &&
+          apptBranchId !== activeBranchFilter
+        ) {
+          continue
+        }
 
         for (const member of s.appointment?.staff ?? []) {
           const coerced = coerceStaff(member)
@@ -329,7 +322,7 @@ export function FeedbackPage({
   }, [staffProp, apiStaff, submissions, activeBranchFilter])
 
   /* ---------------------------------------------------------------- */
-  /*  Branch options — context first, prop second, derived last       */
+  /*  Branch options                                                  */
   /* ---------------------------------------------------------------- */
 
   const branchOptions = useMemo<Branch[]>(() => {
@@ -369,7 +362,6 @@ export function FeedbackPage({
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-5 bg-surface border-b border-line flex-shrink-0">
@@ -384,39 +376,60 @@ export function FeedbackPage({
                 Private feedback from your customers.
               </p>
             </div>
+
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setQuestionsOpen(v => !v)}
+            >
+              {questionsOpen ? 'Hide questions' : 'Manage questions'}
+            </Button>
           </div>
 
-          {/* Metric cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-5">
-            {[
-              { label: 'Average rating', value: avgOverall, sub: `${uiFeedback.length} total` },
-              { label: 'Staff rating',   value: avgStaff,   sub: 'avg. per staff' },
-              { label: 'Experience',     value: avgExp,     sub: 'overall exp.' },
-              {
-                label: 'Unreviewed',
-                value: String(uiFeedback.filter(f => !f.reviewed).length),
-                sub: 'to review',
-              },
-            ].map(m => (
-              <div
-                key={m.label}
-                className="bg-bg rounded-2xl border border-line px-4 sm:px-5 py-4 min-w-0"
-              >
+          {/* Feedback questions panel — collapses in/out */}
+          {questionsOpen && (
+            <FeedbackQuestionsPanel
+              businessId={activeBusinessId}
+              categories={categories}
+              onChange={refresh}
+            />
+          )}
+
+          {/* Metric cards — one per enabled RATING category, plus unreviewed */}
+          {(categoryStats.length > 0 || uiFeedback.length > 0) && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-5">
+              {categoryStats.slice(0, 3).map(stat => (
+                <div
+                  key={stat.categoryId}
+                  className="bg-bg rounded-2xl border border-line px-4 sm:px-5 py-4 min-w-0"
+                >
+                  <p className="text-[11px] sm:text-xs text-ink-3 mb-1 truncate">
+                    {stat.name}
+                  </p>
+                  <p className="font-display text-lg sm:text-2xl text-ink truncate">
+                    {stat.average != null ? stat.average.toFixed(1) : '—'}{' '}
+                    <span className="text-base font-normal text-warm">★</span>
+                  </p>
+                  <p className="text-[11px] sm:text-xs text-ink-3 mt-1 truncate">
+                    {stat.count} {stat.count === 1 ? 'response' : 'responses'}
+                  </p>
+                </div>
+              ))}
+              <div className="bg-bg rounded-2xl border border-line px-4 sm:px-5 py-4 min-w-0">
                 <p className="text-[11px] sm:text-xs text-ink-3 mb-1 truncate">
-                  {m.label}
+                  Unreviewed
                 </p>
                 <p className="font-display text-lg sm:text-2xl text-ink truncate">
-                  {m.value}{' '}
-                  <span className="text-base font-normal text-warm">★</span>
+                  {uiFeedback.filter(f => !f.reviewed).length}
                 </p>
                 <p className="text-[11px] sm:text-xs text-ink-3 mt-1 truncate">
-                  {m.sub}
+                  to review
                 </p>
               </div>
-            ))}
-          </div>
+            </div>
+          )}
 
-          {/* Filters — styled dropdowns */}
+          {/* Filters */}
           <div className="flex items-center gap-2 flex-wrap">
             <StyledSelect
               value={filterStaff}
@@ -502,47 +515,61 @@ export function FeedbackPage({
               </div>
             ) : (
               <div className="flex flex-col gap-2">
-                {filtered.map(f => (
-                  <button
-                    key={f.id}
-                    onClick={() =>
-                      setSelectedId(prev => (prev === f.id ? null : f.id))
-                    }
-                    className={`
-                      flex items-start gap-4 p-4 bg-surface rounded-2xl border text-left transition-all
-                      ${selectedId === f.id
-                        ? 'border-warm shadow-sm'
-                        : 'border-line hover:border-warm'}
-                    `}
-                  >
-                    <div className="flex-shrink-0 pt-0.5">
-                      <MiniStars rating={f.overallRating} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <span className="text-sm font-medium text-ink">
-                          {f.anonymous ? 'Anonymous' : f.customerName ?? 'Anonymous'}
-                        </span>
-                        <span className="text-ink-3">·</span>
-                        <span className="text-sm text-ink-3 truncate">{f.serviceName}</span>
-                        <span className="text-ink-3">·</span>
-                        <span className="text-sm text-ink-3 truncate">{f.staffName}</span>
-                        {!f.reviewed && (
-                          <span className="ml-1 text-[10px] bg-[#FBF5EA] text-[#7A5F2C] px-1.5 py-0.5 rounded-full font-medium">
-                            New
-                          </span>
+                {filtered.map(f => {
+                  const firstRating =
+                    f.responses.find(r => typeof r.rating === 'number')?.rating ?? 0
+
+                  const previewComment =
+                    f.responses.find(r => r.type === 'TEXT' && r.text)?.text ?? null
+
+                  return (
+                    <button
+                      key={f.id}
+                      onClick={() =>
+                        setSelectedId(prev => (prev === f.id ? null : f.id))
+                      }
+                      className={`
+                        flex items-start gap-4 p-4 bg-surface rounded-2xl border text-left transition-all
+                        ${selectedId === f.id
+                          ? 'border-warm shadow-sm'
+                          : 'border-line hover:border-warm'}
+                      `}
+                    >
+                      <div className="flex-shrink-0 pt-0.5">
+                        {firstRating > 0 ? (
+                          <MiniStars rating={firstRating} />
+                        ) : (
+                          <span className="text-xs text-ink-3">—</span>
                         )}
                       </div>
-                      {f.comment && (
-                        <p className="text-sm text-ink-2 line-clamp-2">"{f.comment}"</p>
-                      )}
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <p className="text-xs text-ink-3">{f.date}</p>
-                      <p className="text-xs text-ink-3 mt-0.5">{f.branchName}</p>
-                    </div>
-                  </button>
-                ))}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="text-sm font-medium text-ink">
+                            {f.anonymous ? 'Anonymous' : f.customerName ?? 'Anonymous'}
+                          </span>
+                          <span className="text-ink-3">·</span>
+                          <span className="text-sm text-ink-3 truncate">{f.serviceName}</span>
+                          <span className="text-ink-3">·</span>
+                          <span className="text-sm text-ink-3 truncate">{f.staffName}</span>
+                          {!f.reviewed && (
+                            <span className="ml-1 text-[10px] bg-[#FBF5EA] text-[#7A5F2C] px-1.5 py-0.5 rounded-full font-medium">
+                              New
+                            </span>
+                          )}
+                        </div>
+                        {previewComment && (
+                          <p className="text-sm text-ink-2 line-clamp-2">
+                            "{previewComment}"
+                          </p>
+                        )}
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className="text-xs text-ink-3">{f.date}</p>
+                        <p className="text-xs text-ink-3 mt-0.5">{f.branchName}</p>
+                      </div>
+                    </button>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -559,6 +586,504 @@ export function FeedbackPage({
       )}
     </div>
   )
+}
+
+/* ------------------------------------------------------------------ */
+/*  FeedbackQuestionsPanel                                             */
+/*                                                                     */
+/*  Inline CRUD for feedback categories, so the business can define    */
+/*  what customers are asked without leaving the feedback page.        */
+/* ------------------------------------------------------------------ */
+
+interface QuestionsPanelProps {
+  businessId: string | undefined | null
+  categories: FeedbackCategory[]
+  /** Refetch the parent's submissions + categories after a change. */
+  onChange: () => void
+}
+
+function FeedbackQuestionsPanel({
+  businessId,
+  categories,
+  onChange,
+}: QuestionsPanelProps) {
+  const toast = useToast()
+  const [creating, setCreating] = useState(false)
+
+  const enabledCount = categories.filter(c => c.is_enabled).length
+
+  return (
+    <div className="mb-5 rounded-2xl border border-line bg-bg overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 sm:px-5 py-3.5 border-b border-line">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+            Feedback questions
+          </p>
+          <p className="text-[12px] text-ink-3 mt-1">
+            {categories.length === 0
+              ? 'No questions yet — customers see an empty form until you add at least one.'
+              : `${enabledCount} enabled, ${categories.length - enabledCount} disabled.`}
+          </p>
+        </div>
+
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => setCreating(v => !v)}
+          disabled={!businessId}
+        >
+          {creating ? 'Cancel' : 'Add question'}
+        </Button>
+      </div>
+
+      {creating && businessId && (
+        <CategoryForm
+          businessId={businessId}
+          onCreated={() => {
+            setCreating(false)
+            onChange()
+          }}
+        />
+      )}
+
+      {categories.length > 0 && (
+        <ul className="divide-y divide-line">
+          {categories.map(cat => (
+            <CategoryRow
+              key={cat.id}
+              category={cat}
+              businessId={businessId}
+              onChange={onChange}
+            />
+          ))}
+        </ul>
+      )}
+
+      {categories.length === 0 && !creating && (
+        <div className="px-4 sm:px-5 py-6 text-center">
+          <p className="text-sm text-ink-2 mb-1">
+            No feedback questions yet
+          </p>
+          <p className="text-xs text-ink-3">
+            Add a question and every completed appointment will start
+            collecting an answer.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  CategoryRow — one existing category                                */
+/* ------------------------------------------------------------------ */
+
+function CategoryRow({
+  category,
+  businessId,
+  onChange,
+}: {
+  category: FeedbackCategory
+  businessId: string | undefined | null
+  onChange: () => void
+}) {
+  const toast = useToast()
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const [name, setName] = useState(category.name)
+  const [description, setDescription] = useState(category.description ?? '')
+  const [ratingMin, setRatingMin] = useState(category.rating_scale_min ?? 1)
+  const [ratingMax, setRatingMax] = useState(category.rating_scale_max ?? 5)
+
+  // The API forbids changing type/scale once a category has responses.
+  // Disable the scale inputs in that case and show why.
+  const scaleImmutable = category.response_count > 0
+
+  async function savePatch(patch: FeedbackCategoryUpdateInput) {
+    if (!businessId) return
+    setBusy(true)
+    try {
+      await feedbackApi.categories.update(category.id, patch)
+      onChange()
+    } catch (err) {
+      toast.error(extractErrorMessage(err, 'Could not update the question.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveEdits() {
+    const patch: FeedbackCategoryUpdateInput = {}
+
+    if (name.trim() !== category.name) patch.name = name.trim()
+    if ((description.trim() || null) !== (category.description ?? null)) {
+      patch.description = description.trim() || null
+    }
+    if (
+      category.type === 'RATING' &&
+      !scaleImmutable &&
+      (ratingMin !== category.rating_scale_min ||
+        ratingMax !== category.rating_scale_max)
+    ) {
+      patch.ratingScaleMin = ratingMin
+      patch.ratingScaleMax = ratingMax
+    }
+
+    if (Object.keys(patch).length === 0) {
+      setEditing(false)
+      return
+    }
+
+    await savePatch(patch)
+    setEditing(false)
+  }
+
+  return (
+    <li className="px-4 sm:px-5 py-3.5">
+      {!editing ? (
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-sm font-medium text-ink truncate">
+                {category.name}
+              </p>
+              <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-warm-subtle text-ink-2">
+                {categoryTypeLabel(category.type)}
+              </span>
+              {!category.is_enabled && (
+                <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bad-soft text-bad">
+                  Disabled
+                </span>
+              )}
+            </div>
+            {category.description && (
+              <p className="text-xs text-ink-3 mt-1 truncate">
+                {category.description}
+              </p>
+            )}
+            <p className="text-[11px] text-ink-3 mt-1">
+              {category.response_count}{' '}
+              {category.response_count === 1 ? 'response' : 'responses'}
+              {category.type === 'RATING' &&
+                ` · scale ${category.rating_scale_min ?? 1}–${category.rating_scale_max ?? 5}`}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => savePatch({ isEnabled: !category.is_enabled })}
+              disabled={busy}
+              className="text-xs text-ink-3 hover:text-ink transition-colors disabled:opacity-50"
+            >
+              {category.is_enabled ? 'Disable' : 'Enable'}
+            </button>
+            <span className="text-ink-3">·</span>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="text-xs text-ink-3 hover:text-ink transition-colors"
+            >
+              Edit
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-ink-2">Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              maxLength={100}
+              disabled={busy}
+              className="h-9 px-3 rounded-xl border border-line text-sm bg-surface text-ink placeholder:text-ink-3 focus:outline-none focus:border-warm disabled:opacity-50"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-ink-2">
+              Description (optional)
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              maxLength={1000}
+              disabled={busy}
+              placeholder="What are you asking?"
+              className="h-9 px-3 rounded-xl border border-line text-sm bg-surface text-ink placeholder:text-ink-3 focus:outline-none focus:border-warm disabled:opacity-50"
+            />
+          </div>
+
+          {category.type === 'RATING' && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-ink-2">Rating scale</label>
+              <div className="flex items-center gap-2">
+                <NumberField
+                  value={ratingMin}
+                  onChange={setRatingMin}
+                  min={0}
+                  max={9}
+                  disabled={busy || scaleImmutable}
+                  label="Min"
+                />
+                <span className="text-ink-3 text-sm">to</span>
+                <NumberField
+                  value={ratingMax}
+                  onChange={setRatingMax}
+                  min={ratingMin + 1}
+                  max={10}
+                  disabled={busy || scaleImmutable}
+                  label="Max"
+                />
+              </div>
+              {scaleImmutable && (
+                <p className="text-[11px] text-ink-3">
+                  Scale is locked because this question already has responses.
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => void saveEdits()} loading={busy}>
+              Save
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setEditing(false)
+                setName(category.name)
+                setDescription(category.description ?? '')
+                setRatingMin(category.rating_scale_min ?? 1)
+                setRatingMax(category.rating_scale_max ?? 5)
+              }}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </li>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  CategoryForm — create a new category                               */
+/* ------------------------------------------------------------------ */
+
+function CategoryForm({
+  businessId,
+  onCreated,
+}: {
+  businessId: string
+  onCreated: () => void
+}) {
+  const toast = useToast()
+
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [type, setType] = useState<FeedbackCategoryType>('RATING')
+  const [ratingMin, setRatingMin] = useState(1)
+  const [ratingMax, setRatingMax] = useState(5)
+  const [busy, setBusy] = useState(false)
+
+  async function submit() {
+    const trimmed = name.trim()
+    if (!trimmed) {
+      toast.error('Give the question a name.')
+      return
+    }
+
+    const input: FeedbackCategoryInput = {
+      name: trimmed,
+      type,
+      description: description.trim() || undefined,
+      isEnabled: true,
+    }
+
+    if (type === 'RATING') {
+      if (ratingMax <= ratingMin) {
+        toast.error('Rating scale max must be greater than min.')
+        return
+      }
+      input.ratingScaleMin = ratingMin
+      input.ratingScaleMax = ratingMax
+    }
+
+    setBusy(true)
+    try {
+      await feedbackApi.categories.create(businessId, input)
+      onCreated()
+    } catch (err) {
+      toast.error(extractErrorMessage(err, 'Could not create the question.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="px-4 sm:px-5 py-4 border-b border-line bg-surface flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs font-medium text-ink-2">
+          Question type
+        </label>
+        <div className="grid grid-cols-3 gap-2">
+          {(['RATING', 'TEXT', 'BOOLEAN'] as const).map(t => {
+            const selected = type === t
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setType(t)}
+                disabled={busy}
+                className={`
+                  h-9 px-3 rounded-xl border text-xs font-medium
+                  transition-colors disabled:opacity-50
+                  ${selected
+                    ? 'border-ink bg-ink text-surface'
+                    : 'border-line bg-bg text-ink-2 hover:border-ink-3'}
+                `}
+              >
+                {categoryTypeLabel(t)}
+              </button>
+            )
+          })}
+        </div>
+        <p className="text-[11px] text-ink-3">
+          {type === 'RATING'
+            ? 'A star rating. The customer picks a number between the min and max.'
+            : type === 'TEXT'
+              ? 'A free-text answer. Good for comments and suggestions.'
+              : 'A yes/no question. Good for quick checks.'}
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs font-medium text-ink-2">Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          maxLength={100}
+          disabled={busy}
+          autoFocus
+          placeholder={
+            type === 'RATING'
+              ? 'e.g. How was your visit?'
+              : type === 'TEXT'
+                ? 'e.g. Anything to add?'
+                : 'e.g. Would you recommend us?'
+          }
+          className="h-9 px-3 rounded-xl border border-line text-sm bg-bg text-ink placeholder:text-ink-3 focus:outline-none focus:border-warm disabled:opacity-50"
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs font-medium text-ink-2">
+          Description (optional)
+        </label>
+        <input
+          type="text"
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          maxLength={1000}
+          disabled={busy}
+          placeholder="Shown under the question"
+          className="h-9 px-3 rounded-xl border border-line text-sm bg-bg text-ink placeholder:text-ink-3 focus:outline-none focus:border-warm disabled:opacity-50"
+        />
+      </div>
+
+      {type === 'RATING' && (
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-ink-2">Rating scale</label>
+          <div className="flex items-center gap-2">
+            <NumberField
+              value={ratingMin}
+              onChange={setRatingMin}
+              min={0}
+              max={9}
+              disabled={busy}
+              label="Min"
+            />
+            <span className="text-ink-3 text-sm">to</span>
+            <NumberField
+              value={ratingMax}
+              onChange={setRatingMax}
+              min={ratingMin + 1}
+              max={10}
+              disabled={busy}
+              label="Max"
+            />
+          </div>
+          <p className="text-[11px] text-ink-3">
+            Both numbers are between 0 and 10. Max must be greater than min.
+          </p>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={() => void submit()} loading={busy}>
+          Create question
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Small components                                                   */
+/* ------------------------------------------------------------------ */
+
+function NumberField({
+  value,
+  onChange,
+  min,
+  max,
+  disabled,
+  label,
+}: {
+  value: number
+  onChange: (v: number) => void
+  min: number
+  max: number
+  disabled?: boolean
+  label: string
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] text-ink-3">{label}</span>
+      <input
+        type="number"
+        value={value}
+        onChange={e => {
+          const n = Number(e.target.value)
+          if (Number.isNaN(n)) return
+          onChange(Math.min(max, Math.max(min, n)))
+        }}
+        min={min}
+        max={max}
+        disabled={disabled}
+        className="w-16 h-9 px-2 rounded-xl border border-line text-sm bg-bg text-ink focus:outline-none focus:border-warm disabled:opacity-50"
+      />
+    </div>
+  )
+}
+
+function categoryTypeLabel(t: FeedbackCategoryType): string {
+  switch (t) {
+    case 'RATING':
+      return 'Rating'
+    case 'TEXT':
+      return 'Text'
+    case 'BOOLEAN':
+      return 'Yes / No'
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -728,8 +1253,12 @@ function FeedbackDetailPanel({
   const [note, setNote] = useState(item.internalNote ?? '')
   const [saved, setSaved] = useState(false)
 
+  const lastIdRef = useRef(item.id)
   useEffect(() => {
-    setNote(item.internalNote ?? '')
+    if (lastIdRef.current !== item.id) {
+      lastIdRef.current = item.id
+      setNote(item.internalNote ?? '')
+    }
   }, [item.id, item.internalNote])
 
   function handleSaveNote() {
@@ -737,15 +1266,6 @@ function FeedbackDetailPanel({
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
-
-  const ratings: Array<{ label: string; value: number }> = [
-    { label: 'Overall',         value: item.overallRating },
-    { label: 'Staff service',   value: item.staffRating },
-    { label: 'Experience',      value: item.experienceRating },
-    { label: 'Hygiene',         value: item.hygieneRating },
-    { label: 'Service quality', value: item.serviceQualityRating },
-    { label: 'Waiting time',    value: item.waitingRating },
-  ].filter(r => r.value > 0)
 
   return (
     <div className="
@@ -786,36 +1306,15 @@ function FeedbackDetailPanel({
           )}
         </div>
 
-        {ratings.length > 0 && (
+        {item.responses.length > 0 && (
           <div className="px-5 py-4 border-b border-line">
             <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-4">
-              Ratings
+              Responses
             </p>
-            <div className="flex flex-col gap-3">
-              {ratings.map(r => (
-                <div key={r.label} className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-ink-3 truncate">{r.label}</span>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <MiniStars rating={r.value} />
-                    <span className="text-sm font-medium text-ink w-5 text-right">
-                      {r.value}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {item.extraResponses.length > 0 && (
-          <div className="px-5 py-4 border-b border-line">
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
-              Additional
-            </p>
-            <div className="flex flex-col gap-3">
-              {item.extraResponses.map((r, i) => (
-                <div key={i}>
-                  <p className="text-xs font-medium text-ink-2 mb-1">
+            <div className="flex flex-col gap-4">
+              {item.responses.map(r => (
+                <div key={r.categoryId}>
+                  <p className="text-xs font-medium text-ink-2 mb-1.5">
                     {r.categoryName}
                   </p>
                   {r.type === 'RATING' && r.rating != null && (
@@ -840,12 +1339,11 @@ function FeedbackDetailPanel({
           </div>
         )}
 
-        {item.comment && (
+        {item.responses.length === 0 && (
           <div className="px-5 py-4 border-b border-line">
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
-              Comment
+            <p className="text-sm text-ink-3 leading-relaxed">
+              This submission has no recorded responses.
             </p>
-            <p className="text-sm text-ink-2 leading-relaxed">"{item.comment}"</p>
           </div>
         )}
 
@@ -911,43 +1409,6 @@ function MiniStars({ rating }: { rating: number }) {
 /*  Normalization — FeedbackSubmission → UiFeedback                    */
 /* ------------------------------------------------------------------ */
 
-const CATEGORY_MATCHERS: Array<{
-  key: keyof Pick<
-    UiFeedback,
-    | 'overallRating'
-    | 'staffRating'
-    | 'experienceRating'
-    | 'hygieneRating'
-    | 'serviceQualityRating'
-    | 'waitingRating'
-  >
-  patterns: string[]
-}> = [
-  { key: 'overallRating',        patterns: ['overall'] },
-  { key: 'staffRating',          patterns: ['staff'] },
-  { key: 'experienceRating',     patterns: ['experience'] },
-  { key: 'hygieneRating',        patterns: ['hygiene', 'clean'] },
-  { key: 'serviceQualityRating', patterns: ['quality', 'service quality'] },
-  { key: 'waitingRating',        patterns: ['wait', 'waiting', 'speed'] },
-]
-
-function matchCategory(
-  name: string,
-):
-  | 'overallRating'
-  | 'staffRating'
-  | 'experienceRating'
-  | 'hygieneRating'
-  | 'serviceQualityRating'
-  | 'waitingRating'
-  | null {
-  const lower = name.toLowerCase()
-  for (const m of CATEGORY_MATCHERS) {
-    if (m.patterns.some(p => lower.includes(p))) return m.key
-  }
-  return null
-}
-
 function normalizeForUi(
   s: FeedbackSubmission,
   meta?: { reviewed: boolean; internalNote: string },
@@ -958,92 +1419,31 @@ function normalizeForUi(
   const firstStaff  = s.appointment?.staff?.[0]
   const staffId     = firstStaff?.id ?? ''
   const staffName   = firstStaff
-    ? `${firstStaff.firstName} ${firstStaff.lastName}`.trim()
+    ? `${firstStaff.first_name} ${firstStaff.last_name}`.trim()
     : '—'
 
-  const date = s.submittedAt
-    ? new Date(s.submittedAt).toLocaleDateString(undefined, {
+  const date = s.submitted_at
+    ? new Date(s.submitted_at).toLocaleDateString(undefined, {
         month: 'short',
         day: 'numeric',
         year: 'numeric',
       })
     : '—'
 
-  let overallRating = 0
-  let staffRating = 0
-  let experienceRating = 0
-  let hygieneRating = 0
-  let serviceQualityRating = 0
-  let waitingRating = 0
-
-  let comment: string | null = null
-  const extraResponses: UiFeedback['extraResponses'] = []
-
-  for (const r of s.responses) {
-    const name = r.category?.name ?? ''
-    const type = r.category?.type ?? 'RATING'
-
-    if (type === 'RATING' && r.ratingValue != null) {
-      const slot = matchCategory(name)
-      if (slot) {
-        const v = r.ratingValue
-        if (slot === 'overallRating') overallRating = v
-        else if (slot === 'staffRating') staffRating = v
-        else if (slot === 'experienceRating') experienceRating = v
-        else if (slot === 'hygieneRating') hygieneRating = v
-        else if (slot === 'serviceQualityRating') serviceQualityRating = v
-        else if (slot === 'waitingRating') waitingRating = v
-      } else {
-        extraResponses.push({
-          categoryName: name,
-          type,
-          rating: r.ratingValue,
-          text: null,
-          boolean: null,
-        })
-      }
-    } else if (type === 'TEXT' && r.textResponse) {
-      if (!comment) comment = r.textResponse
-      else {
-        extraResponses.push({
-          categoryName: name,
-          type,
-          rating: null,
-          text: r.textResponse,
-          boolean: null,
-        })
-      }
-    } else if (type === 'BOOLEAN' && r.booleanResponse != null) {
-      extraResponses.push({
-        categoryName: name,
-        type,
-        rating: null,
-        text: null,
-        boolean: r.booleanResponse,
-      })
-    }
-  }
-
-  if (overallRating === 0) {
-    const numeric = [
-      staffRating,
-      experienceRating,
-      hygieneRating,
-      serviceQualityRating,
-      waitingRating,
-    ].filter(v => v > 0)
-    if (numeric.length > 0) {
-      overallRating = Math.round(
-        numeric.reduce((s, v) => s + v, 0) / numeric.length,
-      )
-    }
-  }
+  const responses: UiResponse[] = s.responses.map(r => ({
+    categoryId: r.category.id,
+    categoryName: r.category.name,
+    type: r.category.type,
+    rating: r.rating_value,
+    text: r.text_response,
+    boolean: r.boolean_response,
+  }))
 
   return {
     id: s.id,
-    anonymous: s.isAnonymous,
+    anonymous: s.is_anonymous,
     customerName: s.customer
-      ? `${s.customer.firstName} ${s.customer.lastName}`.trim()
+      ? `${s.customer.first_name} ${s.customer.last_name}`.trim()
       : null,
     customerPhone: s.customer?.phone ?? null,
     serviceName,
@@ -1052,17 +1452,7 @@ function normalizeForUi(
     branchId,
     branchName,
     date,
-
-    overallRating,
-    staffRating,
-    experienceRating,
-    hygieneRating,
-    serviceQualityRating,
-    waitingRating,
-
-    comment,
-    extraResponses,
-
+    responses,
     reviewed: meta?.reviewed ?? false,
     internalNote: meta?.internalNote ?? '',
   }
@@ -1080,7 +1470,6 @@ function unwrapArray<T>(res: unknown): T[] {
   return []
 }
 
-/** Single-object counterpart to {@link unwrapArray}, for detail endpoints. */
 function unwrapOne<T>(res: unknown): T | null {
   if (res && typeof res === 'object') {
     const anyRes = res as any

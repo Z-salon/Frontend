@@ -1,6 +1,6 @@
 You are building the frontend prototype for a premium salon management SaaS called:
 
-Z-salon
+Se'ert
 ዘsalon
 
 This is a FRONTEND-ONLY prototype.
@@ -30,7 +30,7 @@ This phase focuses ONLY on:
 
 Brand:
 
-Z-salon
+Se'ert
 ዘsalon
 
 The product should feel:
@@ -103,7 +103,7 @@ Do NOT introduce many additional brand colors.
 
 Use a sophisticated typography hierarchy.
 
-For the Z-salon brand and major display headings:
+For the Se'ert brand and major display headings:
 Use an elegant serif/display style.
 
 For normal application UI:
@@ -163,7 +163,7 @@ Main layout:
 
 LEFT SIDEBAR
 
-Z-salon logo / wordmark
+Se'ert logo / wordmark
 
 Navigation:
 
@@ -235,7 +235,7 @@ Design should feel like a premium brand introduction.
 
 Show:
 
-Z-salon
+Se'ert
 ዘsalon
 
 "Manage your salon beautifully."
@@ -354,7 +354,7 @@ Address
 
 Example:
 
-Z-salon
+Se'ert
 +251 9XX XXX XXX
 hello@zsalon.com
 Bole, Addis Ababa
@@ -370,7 +370,7 @@ STEP 2 — BRANDING
 
 Title:
 
-"Make Z-salon yours"
+"Make Se'ert yours"
 
 Allow:
 
@@ -558,7 +558,7 @@ Show a beautiful completion screen:
 
 "Your salon is ready."
 
-"Welcome to Z-salon."
+"Welcome to Se'ert."
 
 Summary:
 
@@ -569,7 +569,7 @@ Opening hours
 
 CTA:
 
-"Enter Z-salon"
+"Enter Se'ert"
 
 This takes the owner to the booking dashboard.
 
@@ -1006,7 +1006,7 @@ Create realistic mock data for the prototype.
 
 Salon:
 
-Z-salon
+Se'ert
 
 Branches:
 
@@ -1194,7 +1194,7 @@ Do not create unnecessary pages.
 
 The final prototype should be something I can open in front of a real salon owner and say:
 
-"This is Z-salon. This is how you would manage your salon."
+"This is Se'ert. This is how you would manage your salon."
 
 The owner should immediately understand:
 

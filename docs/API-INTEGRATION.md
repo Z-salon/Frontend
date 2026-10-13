@@ -1,6 +1,6 @@
-# Z-Salon Backend — Integration Guide
+# Se'ert Backend — Integration Guide
 
-Reference for integrating against the Z-Salon REST API. Covers **Auth**, **Business
+Reference for integrating against the Se'ert REST API. Covers **Auth**, **Business
 Configuration**, **Payment Methods**, **Branch Management**, **Branch Working Hours**,
 **Branch Booking Configuration**, **Service Categories**, **Services**, **Staff**,
 **Staff Qualifications**, **Staff Time Off** and **Batch Create**.
@@ -466,7 +466,7 @@ with sample works.
   "success": true,
   "message": "Business branding retrieved",
   "data": {
-    "logo": { "url": "https://res.cloudinary.com/demo/image/upload/logo.png", "publicId": "z-salon/logos/b1_logo" },
+    "logo": { "url": "https://res.cloudinary.com/demo/image/upload/logo.png", "publicId": "Se'ert/logos/b1_logo" },
     "cover": null,
     "primaryColor": "#FF5722",
     "secondaryColor": "#212121",
@@ -484,7 +484,7 @@ with sample works.
     "serviceCategories": [
       {
         "id": "c1...", "name": "Hair", "description": "Cuts & styling",
-        "sampleWorks": [{ "id": "sw1...", "url": "https://res.cloudinary.com/demo/image/upload/sample.jpg", "publicId": "z-salon/samples/sw1", "name": "Balayage", "description": null, "serviceCategoryId": "c1..." }]
+        "sampleWorks": [{ "id": "sw1...", "url": "https://res.cloudinary.com/demo/image/upload/sample.jpg", "publicId": "Se'ert/samples/sw1", "name": "Balayage", "description": null, "serviceCategoryId": "c1..." }]
       }
     ]
   }
@@ -516,7 +516,7 @@ with sample works.
 {
   "logo": {
     "url": "https://res.cloudinary.com/demo/image/upload/v1234/logo.png",
-    "publicId": "z-salon/logos/b1_logo"
+    "publicId": "Se'ert/logos/b1_logo"
   },
   "cover": null,
   "primaryColor": "#FF5722",
@@ -1111,7 +1111,7 @@ All optional. Errors: 409 duplicate name, 404 not found.
 
 | Method | Path | Auth | Body |
 | --- | --- | --- | --- |
-| POST | `/service-categories/{categoryId}/sample-works` | Bearer | `{ "name": "Balayage", "url": "https://...", "publicId": "z-salon/samples/sw1", "description": "…" }` |
+| POST | `/service-categories/{categoryId}/sample-works` | Bearer | `{ "name": "Balayage", "url": "https://...", "publicId": "Se'ert/samples/sw1", "description": "…" }` |
 | DELETE | `/sample-works/{sampleWorkId}` | Bearer | — |
 
 `name` required (1–250), `url` required (valid URL), **`publicId` required** (the Cloudinary
@@ -1129,7 +1129,7 @@ public ID returned after upload), `description` optional (≤ 1000).
   "categoryId": "c1...",
   "name": "Balayage",
   "url": "https://res.cloudinary.com/demo/image/upload/sample.jpg",
-  "publicId": "z-salon/samples/sw1",
+  "publicId": "Se'ert/samples/sw1",
   "description": "Warm tones",
   "createdAt": "...",
   "updatedAt": "..."
@@ -1367,7 +1367,7 @@ Submit a payment receipt for a customer's own appointment.
 {
   "paymentMethodId": "pm1...",
   "receiptImageUrl": "https://res.cloudinary.com/demo/image/upload/receipt.jpg",
-  "receiptImagePublicId": "z-salon/receipts/appt1_receipt",
+  "receiptImagePublicId": "Se'ert/receipts/appt1_receipt",
   "submittedAmount": 500,
   "customerNote": "Sent via Telebirr"
 }
@@ -1391,7 +1391,7 @@ The body is identical to §11.1, with the addition of a `verificationToken` (cus
   "verificationToken": "cat_abc123...",
   "paymentMethodId": "pm1...",
   "receiptImageUrl": "https://res.cloudinary.com/demo/image/upload/receipt.jpg",
-  "receiptImagePublicId": "z-salon/receipts/appt1_receipt",
+  "receiptImagePublicId": "Se'ert/receipts/appt1_receipt",
   "submittedAmount": 500,
   "customerNote": "Sent via Telebirr"
 }

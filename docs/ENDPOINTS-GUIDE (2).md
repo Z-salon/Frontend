@@ -1,4 +1,4 @@
-# Z-Salon API — Endpoint Guide
+# Se'ert API — Endpoint Guide
 
 **Modules covered:** Branch Management · Customers · Appointments (Admin side) · Availability · Service Usage · Appointment Payments · Payment Receipts · Refunds · Customer Appointments (Customer side) · Public Booking
 
@@ -1122,4 +1122,4 @@ Validation: `RATING` requires integer `ratingScaleMin < ratingScaleMax` within `
 
 ---
 
-*Generated from source: `src/routes/index.ts`, module routes/validation/services under `src/modules/*`, `prisma/schema.prisma`. Companion Postman collection: `docs/Z-Salon-API.postman_collection.json`.*
+*Generated from source: `src/routes/index.ts`, module routes/validation/services under `src/modules/*`, `prisma/schema.prisma`. Companion Postman collection: `docs/Se'ert-API.postman_collection.json`.*

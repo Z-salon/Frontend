@@ -549,7 +549,7 @@ function BrandingSettings({
     }
   }
 
-  const businessName = branding?.branches?.[0]?.name ?? 'Z-salon'
+  const businessName = branding?.branches?.[0]?.name ?? "Se'ert"
   const logoUrl = readLogoUrl(branding)
 
   return (
@@ -639,12 +639,12 @@ function BrandingSettings({
             >
               {businessName}
             </p>
-            <p
+            {/* <p
               className="font-display italic text-lg"
               style={{ color: secondary, opacity: 0.75 }}
             >
               ዘsalon
-            </p>
+            </p> */}
           </div>
         </div>
 

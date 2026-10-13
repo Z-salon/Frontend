@@ -155,7 +155,7 @@ export function FlowHeader({
   backLabel: string
   step?: string
 }) {
-  const name = branding?.name?.trim() || 'Z-Salon'
+  const name = branding?.name?.trim() || "Se'ert"
 
   return (
     <header className="glass-bar sticky top-0 z-40 border-b border-line/70">

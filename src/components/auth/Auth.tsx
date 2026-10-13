@@ -53,9 +53,9 @@ function BrandMark() {
   return (
     <div className="mb-10 text-center">
       <h1 className="font-display text-[2.75rem] text-ink leading-none tracking-tight">
-        Z-salon
+        Se'ert
       </h1>
-      <p className="text-warm text-xl mt-1.5 font-display italic">ዘsalon</p>
+      {/* <p className="text-warm text-xl mt-1.5 font-display italic">ዘsalon</p> */}
     </div>
   )
 }
