@@ -1,8 +1,20 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { Transaction, ExpenseCategory, PaymentMethod, Customer } from '../../types'
+import type { Branch } from '../../types/api'
 import { Button, Modal } from '../ui'
+import { useBusiness } from '../../contexts/BusinessContext'
+import { useBranch } from '../../contexts/BranchContext'
+import { FinancePaymentsTab } from './FinancePaymentsTab'
+import { FinancePaymentMethodsTab } from './FinancePaymentMethodsTab'
 
-type FinanceTab = 'overview' | 'transactions' | 'expenses' | 'outstanding' | 'reports'
+type FinanceTab =
+  | 'overview'
+  | 'payments'
+  | 'methods'
+  | 'transactions'
+  | 'expenses'
+  | 'outstanding'
+  | 'reports'
 
 interface FinancePageProps {
   transactions: Transaction[]
@@ -14,19 +26,36 @@ interface FinancePageProps {
   onUpdatePaymentMethods: (p: PaymentMethod[]) => void
   onUpdateCustomers: (c: Customer[]) => void
   onNavigateToCustomer?: (customerId: string) => void
+  /** Real business id — the Payments tab talks to §7 directly. */
+  businessId?: string
 }
 
 export function FinancePage({
   transactions, expenseCategories, paymentMethods, customers,
+  businessId,
   onUpdateTransactions, onUpdateCategories, onUpdatePaymentMethods,
   onUpdateCustomers, onNavigateToCustomer,
 }: FinancePageProps) {
   const [tab, setTab] = useState<FinanceTab>('overview')
+
+  // Real branches for the Payments tab filter. The rest of this page still
+  // runs on seeded mock data, so branch names here come from the API.
+  const { activeBusinessId } = useBusiness()
+  const { branches: branchCtx } = useBranch()
+  const branchList = useMemo(
+    () =>
+      branchCtx
+        .filter((b): b is Branch & { id: string } => !!b?.id)
+        .map(b => ({ id: b.id, name: b.name })),
+    [branchCtx],
+  )
   const [filterBranch, setFilterBranch] = useState('all')
   const [filterDate,   setFilterDate]   = useState<'today' | 'week' | 'month' | 'all'>('month')
 
   const TABS: { id: FinanceTab; label: string }[] = [
     { id: 'overview',      label: 'Overview'      },
+    { id: 'payments',      label: 'Payments'      },
+    { id: 'methods',       label: 'Payment methods' },
     { id: 'transactions',  label: 'Transactions'  },
     { id: 'expenses',      label: 'Expenses'      },
     { id: 'outstanding',   label: 'Outstanding'   },
@@ -125,6 +154,15 @@ export function FinancePage({
         )}
         {tab === 'reports' && (
           <ReportsTab transactions={transactions} />
+        )}
+        {tab === 'payments' && (
+          <FinancePaymentsTab
+            businessId={businessId ?? activeBusinessId ?? ''}
+            branches={branchList}
+          />
+        )}
+        {tab === 'methods' && (
+          <FinancePaymentMethodsTab businessId={businessId ?? activeBusinessId ?? undefined} />
         )}
       </div>
     </div>

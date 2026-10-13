@@ -1,18 +1,66 @@
-import { type ReactNode } from 'react'
+// src/components/layout/AppShell.tsx
+
+import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { NavSection } from '../../types'
+import { useBusiness } from '../../contexts/BusinessContext'
+import { useBranch, ALL_BRANCHES } from '../../contexts/BranchContext'
 
 interface ShellProps {
   children: ReactNode
   activeSection: NavSection
   onNavigate: (s: NavSection) => void
+  /** Called when the user picks "Log out" from the account menu. */
+  onLogout?: () => void
 }
 
-export function AppShell({ children, activeSection, onNavigate }: ShellProps) {
+export function AppShell({
+  children,
+  activeSection,
+  onNavigate,
+  onLogout,
+}: ShellProps) {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  function handleNavigate(section: NavSection) {
+    onNavigate(section)
+    setMobileNavOpen(false)
+  }
+
   return (
     <div className="flex h-full bg-bg overflow-hidden">
-      <Sidebar active={activeSection} onNavigate={onNavigate} />
+      {/* Desktop sidebar — fixed width, hidden below lg */}
+      <div className="hidden lg:flex">
+        <Sidebar
+          active={activeSection}
+          onNavigate={handleNavigate}
+          onLogout={onLogout}
+        />
+      </div>
+
+      {/* Mobile drawer — overlay + slide-in sidebar */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div
+            className="absolute inset-0 bg-ink/50 backdrop-blur-sm"
+            onClick={() => setMobileNavOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="absolute inset-y-0 left-0 w-64 max-w-[80vw] shadow-2xl">
+            <Sidebar
+              active={activeSection}
+              onNavigate={handleNavigate}
+              onClose={() => setMobileNavOpen(false)}
+              onLogout={onLogout}
+            />
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <TopBar section={activeSection} />
+        <TopBar
+          section={activeSection}
+          onMenuClick={() => setMobileNavOpen(true)}
+        />
         <main className="flex-1 overflow-hidden">{children}</main>
       </div>
     </div>
@@ -30,12 +78,44 @@ const NAV: { id: NavSection; label: string; enabled: boolean }[] = [
   { id: 'finance',   label: 'Finance',   enabled: true  },
 ]
 
-function Sidebar({ active, onNavigate }: { active: NavSection; onNavigate: (s: NavSection) => void }) {
+/* ------------------------------------------------------------------ */
+/*  Sidebar                                                            */
+/* ------------------------------------------------------------------ */
+
+function Sidebar({
+  active,
+  onNavigate,
+  onClose,
+  onLogout,
+}: {
+  active: NavSection
+  onNavigate: (s: NavSection) => void
+  onClose?: () => void
+  onLogout?: () => void
+}) {
+  const { activeMembership } = useBusiness()
+  const businessName = activeMembership?.business?.name ?? "Se'ert"
+
   return (
-    <aside className="w-56 flex-shrink-0 bg-ink flex flex-col h-full select-none">
-      <div className="px-6 py-6 border-b border-white/10">
-        <div className="font-display text-2xl text-surface leading-none">Z-salon</div>
-        <div className="text-warm text-sm mt-1 font-display italic">ዘsalon</div>
+    <aside className="w-56 lg:w-56 w-64 max-w-[80vw] flex-shrink-0 bg-ink flex flex-col h-full select-none">
+      <div className="px-6 py-6 border-b border-white/10 flex items-center justify-between gap-2">
+        <div>
+          <div className="font-display text-2xl text-surface leading-none">Se'ert</div>
+          {/* <div className="text-warm text-sm mt-1 font-display italic">ዘsalon</div> */}
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close menu"
+            className="lg:hidden w-8 h-8 flex items-center justify-center rounded-lg text-white/50 hover:text-white/80 hover:bg-white/6 transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <nav className="flex-1 py-4 px-3 flex flex-col gap-0.5 overflow-y-auto">
@@ -44,6 +124,7 @@ function Sidebar({ active, onNavigate }: { active: NavSection; onNavigate: (s: N
           const isEnabled = item.enabled
           return (
             <button
+              type="button"
               key={item.id}
               onClick={() => isEnabled && onNavigate(item.id)}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 w-full text-left
@@ -67,54 +148,410 @@ function Sidebar({ active, onNavigate }: { active: NavSection; onNavigate: (s: N
 
       <div className="px-3 pb-2">
         <button
-          onClick={() => onNavigate('settings')}
+          type="button"
+          onClick={() => onNavigate('settings' as NavSection)}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 w-full text-left
-            ${active === 'settings' ? 'bg-white/12 text-surface' : 'text-white/50 hover:bg-white/6 hover:text-white/80'}`}
+            ${active === ('settings' as NavSection) ? 'bg-white/12 text-surface' : 'text-white/50 hover:bg-white/6 hover:text-white/80'}`}
         >
-          <span className={`flex-shrink-0 ${active === 'settings' ? 'opacity-100' : 'opacity-50'}`}><SettingsIcon /></span>
+          <span className={`flex-shrink-0 ${active === ('settings' as NavSection) ? 'opacity-100' : 'opacity-50'}`}>
+            <SettingsIcon />
+          </span>
           Settings
         </button>
       </div>
 
+      {/* Account chip — clickable, opens a small popover with Log out. */}
       <div className="px-3 pb-5">
-        <div className="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-white/6 transition-colors cursor-pointer">
-          <div className="w-8 h-8 rounded-full bg-warm flex items-center justify-center text-ink text-xs font-semibold flex-shrink-0">SA</div>
-          <div className="flex-1 min-w-0">
-            <p className="text-surface text-sm font-medium truncate">Sara Admin</p>
-            <p className="text-white/35 text-xs truncate">Z-salon · Bole</p>
-          </div>
-        </div>
+        <AccountMenu
+          businessName={businessName}
+          onLogout={onLogout}
+        />
       </div>
     </aside>
   )
 }
 
-function TopBar({ section }: { section: NavSection }) {
+/* ------------------------------------------------------------------ */
+/*  AccountMenu — the business-name chip + popover                     */
+/* ------------------------------------------------------------------ */
+
+function AccountMenu({
+  businessName,
+  onLogout,
+}: {
+  businessName: string
+  onLogout?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  function handleLogout(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    setOpen(false)
+    // Fire immediately. If the parent swaps the tree on logout, the
+    // closing animation doesn't matter — the component unmounts anyway.
+    onLogout?.()
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={`
+          w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-colors text-left
+          ${open ? 'bg-white/10' : 'hover:bg-white/6'}
+        `}
+      >
+        <div className="w-8 h-8 rounded-full bg-warm flex items-center justify-center text-ink text-xs font-semibold flex-shrink-0">
+          {businessName.charAt(0).toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-surface text-sm font-medium truncate">{businessName}</p>
+          <p className="text-white/35 text-xs truncate">Business</p>
+        </div>
+        <svg
+          width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          className={`text-white/40 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="
+            absolute bottom-full left-0 right-0 mb-2
+            bg-surface border border-line rounded-xl
+            shadow-lg shadow-black/20
+            overflow-hidden z-30
+          "
+        >
+          <div className="px-4 py-3 border-b border-line">
+            <p className="text-sm font-medium text-ink truncate">{businessName}</p>
+            <p className="text-xs text-ink-3 mt-0.5 truncate">Signed in</p>
+          </div>
+
+          <button
+            type="button"
+            role="menuitem"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={handleLogout}
+            className="
+              w-full flex items-center gap-2.5 px-4 py-2.5
+              text-sm text-left text-[#B03A3A]
+              hover:bg-[#FBEDED] transition-colors
+              cursor-pointer
+            "
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Log out
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  TopBar                                                             */
+/* ------------------------------------------------------------------ */
+
+function TopBar({ section, onMenuClick }: { section: NavSection; onMenuClick: () => void }) {
+  const { branches, activeBranchId, setActiveBranchId, loading } = useBranch()
+
   const titles: Record<NavSection, string> = {
     bookings:  'Bookings',  dashboard: 'Dashboard', customers: 'Customers',
     services:  'Services',  staff:     'Staff',      branches:  'Branches',
     feedback:  'Feedback',  finance:   'Finance',    settings:  'Settings',
-  }
+  } as Record<NavSection, string>
+
+  const branchOptions = [
+    ...branches.map(b => ({ value: b.id, label: b.name })),
+    ...(branches.length > 1 ? [{ value: ALL_BRANCHES, label: 'All branches' }] : []),
+  ]
+
   return (
-    <header className="h-14 bg-surface border-b border-line flex items-center justify-between px-6 flex-shrink-0">
-      <h1 className="text-sm font-semibold text-ink">{titles[section]}</h1>
-      <div className="flex items-center gap-3">
-        <select className="h-8 pl-3 pr-2 rounded-xl border border-line text-xs bg-bg text-ink focus:outline-none focus:border-warm cursor-pointer">
-          <option>Bole</option>
-          <option>Kazanchis</option>
-          <option>All branches</option>
-        </select>
-        <button className="w-8 h-8 rounded-xl flex items-center justify-center text-ink-3 hover:bg-warm-subtle hover:text-ink transition-colors relative">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0" />
+    <header className="h-14 bg-surface border-b border-line flex items-center justify-between gap-2 px-4 sm:px-6 flex-shrink-0">
+      <div className="flex items-center gap-3 min-w-0">
+        <button
+          type="button"
+          onClick={onMenuClick}
+          aria-label="Open menu"
+          className="lg:hidden -ml-1 w-9 h-9 rounded-xl flex items-center justify-center text-ink-3 hover:bg-warm-subtle hover:text-ink transition-colors flex-shrink-0"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 12h18M3 6h18M3 18h18" />
           </svg>
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#C4A97D] rounded-full" />
         </button>
-        <div className="w-8 h-8 rounded-full bg-warm flex items-center justify-center text-ink text-xs font-semibold cursor-pointer">SA</div>
+
+        <h1 className="text-sm font-semibold text-ink truncate">{titles[section]}</h1>
+      </div>
+
+      <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+        <div className="hidden sm:block">
+          <BranchSelect
+            value={activeBranchId}
+            onChange={setActiveBranchId}
+            options={branchOptions}
+            loading={loading}
+          />
+        </div>
+        <NotificationsButton />
       </div>
     </header>
   )
 }
+
+/* ------------------------------------------------------------------ */
+/*  Branch select — custom dropdown                                    */
+/* ------------------------------------------------------------------ */
+
+function BranchSelect({
+  value,
+  onChange,
+  options,
+  loading,
+}: {
+  value: string
+  onChange: (v: string) => void
+  options: { value: string; label: string }[]
+  loading: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  const selected = options.find(o => o.value === value)
+  const placeholder = loading
+    ? 'Loading…'
+    : options.length === 0
+      ? 'No branches'
+      : 'Select branch'
+
+  const disabled = loading || options.length === 0
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(o => !o)}
+        className="
+          h-8 min-w-[9rem] max-w-[14rem] px-3 pr-2
+          rounded-[10px]
+          border border-line bg-surface text-ink text-xs font-medium
+          flex items-center justify-between gap-2 text-left
+          focus:outline-none focus:border-ink-3 focus:ring-2 focus:ring-ink-3/10
+          transition-colors
+          disabled:opacity-50 disabled:cursor-not-allowed
+        "
+      >
+        <span className="truncate flex items-center gap-2 min-w-0">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+            className="text-ink-3 flex-shrink-0">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" />
+            <circle cx="12" cy="10" r="3" />
+          </svg>
+          <span className="truncate">{selected?.label ?? placeholder}</span>
+        </span>
+        <svg
+          className={`flex-shrink-0 text-ink-3 transition-transform ${open ? 'rotate-180' : ''}`}
+          width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {open && !disabled && (
+        <div className="
+          absolute right-0 z-30 mt-1.5
+          min-w-[11rem] max-w-[16rem]
+          max-h-72 overflow-y-auto
+          rounded-[10px] border border-line bg-surface
+          shadow-lg shadow-black/5
+          py-1
+        ">
+          {options.map(o => {
+            const isSelected = o.value === value
+            return (
+              <button
+                type="button"
+                key={o.value}
+                onClick={() => { onChange(o.value); setOpen(false) }}
+                className={`
+                  w-full px-3 py-2 text-left text-xs
+                  flex items-center justify-between gap-2 transition-colors
+                  ${isSelected
+                    ? 'bg-warm-subtle text-ink font-medium'
+                    : 'text-ink-2 hover:bg-warm-subtle hover:text-ink'}
+                `}
+              >
+                <span className="truncate">{o.label}</span>
+                {isSelected && (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+                    className="text-ink flex-shrink-0">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Notifications                                                      */
+/* ------------------------------------------------------------------ */
+
+type Notification = {
+  id: string
+  title: string
+  body: string
+  createdAt: string
+  read: boolean
+}
+
+function NotificationsButton() {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState<Notification[]>([])
+  const ref = useRef<HTMLDivElement>(null)
+
+  const unread = items.filter(n => !n.read).length
+
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  function markAllRead() {
+    setItems(prev => prev.map(n => ({ ...n, read: true })))
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-label="Notifications"
+        className="w-8 h-8 rounded-xl flex items-center justify-center text-ink-3 hover:bg-warm-subtle hover:text-ink transition-colors relative flex-shrink-0"
+      >
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0" />
+        </svg>
+        {unread > 0 && (
+          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#C4A97D] rounded-full" />
+        )}
+      </button>
+
+      {open && (
+        <div className="
+          absolute right-0 mt-2
+          w-80 max-w-[calc(100vw-2rem)]
+          rounded-xl border border-line bg-surface
+          shadow-lg shadow-black/5
+          overflow-hidden z-30
+        ">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+            <p className="text-sm font-medium text-ink">Notifications</p>
+            {items.length > 0 && unread > 0 && (
+              <button
+                type="button"
+                onClick={markAllRead}
+                className="text-xs text-ink-3 hover:text-ink-2 transition-colors"
+              >
+                Mark all read
+              </button>
+            )}
+          </div>
+
+          {items.length === 0 ? (
+            <div className="px-4 py-8 text-center">
+              <div className="w-10 h-10 rounded-full bg-warm-subtle flex items-center justify-center mx-auto mb-3">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8A847F" strokeWidth="1.5">
+                  <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0" />
+                </svg>
+              </div>
+              <p className="text-sm text-ink-2 font-medium">You&apos;re all caught up</p>
+              <p className="text-xs text-ink-3 mt-0.5">New notifications will show up here.</p>
+            </div>
+          ) : (
+            <ul className="max-h-80 overflow-y-auto divide-y divide-line">
+              {items.map(n => (
+                <li key={n.id} className="px-4 py-3 hover:bg-warm-subtle/40 transition-colors">
+                  <p className="text-sm font-medium text-ink">{n.title}</p>
+                  <p className="text-xs text-ink-3 mt-0.5 leading-relaxed">{n.body}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Icons                                                              */
+/* ------------------------------------------------------------------ */
 
 function NavIcon({ id }: { id: NavSection }) {
   switch (id) {

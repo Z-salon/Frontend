@@ -1,4 +1,4 @@
-import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type HtmlTagDescriptor, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
@@ -7,6 +7,9 @@ import siteConfiguration from './.figma/make/site.json'
 
 // Vite config — https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
+  // Load .env, .env.local, .env.[mode], .env.[mode].local from the project root.
+  const env = loadEnv(mode, process.cwd(), '')
+
   // .figma/make/deploy-preview passes `--mode development` for cached-preview builds.
   const emitSourcemaps = mode === 'development'
 
@@ -15,10 +18,17 @@ export default defineConfig(({ mode }) => {
     build: {
       sourcemap: emitSourcemaps ? 'inline' : false,
       minify: !emitSourcemaps,
+      rollupOptions: {
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          customer: path.resolve(__dirname, 'customer.html'),
+        },
+      },
     },
     plugins: [
       react(),
       tailwindcss(),
+      customerDevFallback(),
       figmaSiteConfiguration(siteConfiguration),
       figmaErrorOverlayReplay(),
       figmaReactRefreshBoundaryFallback(),
@@ -31,13 +41,31 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       host: '0.0.0.0',
-      port: parseInt(process.env.PORT || '8443'),
+      port: parseInt(process.env.PORT || '5173'),
       strictPort: true,
       watch: { ignored: ['**/.figma/**'] },
+      proxy: {
+        '/api': {
+          target: env.VITE_API_BASE_URL || 'http://localhost:3000',
+          changeOrigin: true,   // required for cookies to flow
+          secure: false,
+          configure: (proxy) => {
+            proxy.on('proxyReq', (_proxyReq, req) => {
+              console.log('[proxy →]', req.method, req.url, '→', env.VITE_API_BASE_URL)
+            })
+            proxy.on('proxyRes', (proxyRes, req) => {
+              console.log('[proxy ←]', proxyRes.statusCode, req.url)
+            })
+            proxy.on('error', (err, req) => {
+              console.error('[proxy ✗]', req.url, err.message)
+            })
+          },
+        },
+      },
     },
     preview: {
       host: '0.0.0.0',
-      port: parseInt(process.env.PORT || '8443'),
+      port: parseInt(process.env.PORT || '5173'),
     },
   }
 })
@@ -69,6 +97,41 @@ type FigmaSiteConfiguration = {
   }
 }
 
+/**
+ * Dev-only: routes customer-facing paths to `customer.html` instead of
+ * `index.html` (the admin SPA). Without this, customer links like
+ * `/book/...`, `/appointments/confirm/...`, and `/feedback/...` would
+ * load the admin shell, which has no route for them and 404s.
+ *
+ * In production, the equivalent must be a rewrite rule on whatever
+ * serves the built assets (nginx, CloudFront, Vercel, etc.), or a
+ * separate subdomain for the customer app.
+ */
+function customerDevFallback(): Plugin {
+  /** Path prefixes owned by the customer app. */
+  const CUSTOMER_PREFIXES = [
+    '/book/',
+    '/appointments/confirm/',
+    '/feedback/',
+  ]
+
+  return {
+    name: 'customer-dev-fallback',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (
+          req.url &&
+          CUSTOMER_PREFIXES.some(prefix => req.url!.startsWith(prefix))
+        ) {
+          req.url = '/customer.html'
+        }
+        next()
+      })
+    },
+  }
+}
+
 /** Applies /.figma/make/site.json to the generated document shell. */
 function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
   function sanitizeHtmlValue(value: string | undefined): string {
@@ -81,7 +144,7 @@ function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
     return html.replace(`<!-- ${slotName} -->`, content)
   }
 
-  const title = config.title ?? "Figma Make App"
+  const title = config.title ?? "Se'ert"
   const description = config.description ?? ''
   const favicon = config.icons?.icon ?? ''
   const socialImage = config.openGraph?.image ?? ''
