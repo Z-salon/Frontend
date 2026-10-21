@@ -94,14 +94,14 @@ function Sidebar({
   onLogout?: () => void
 }) {
   const { activeMembership } = useBusiness()
-  const businessName = activeMembership?.business?.name ?? 'Z-salon'
+  const businessName = activeMembership?.business?.name ?? "Se'ert"
 
   return (
     <aside className="w-56 lg:w-56 w-64 max-w-[80vw] flex-shrink-0 bg-ink flex flex-col h-full select-none">
       <div className="px-6 py-6 border-b border-white/10 flex items-center justify-between gap-2">
         <div>
-          <div className="font-display text-2xl text-surface leading-none">Z-salon</div>
-          <div className="text-warm text-sm mt-1 font-display italic">ዘsalon</div>
+          <div className="font-display text-2xl text-surface leading-none">Se'ert</div>
+          {/* <div className="text-warm text-sm mt-1 font-display italic">ዘsalon</div> */}
         </div>
         {onClose && (
           <button

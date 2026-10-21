@@ -67,9 +67,9 @@ function BootScreen() {
   return (
     <div className="min-h-screen bg-bg flex flex-col items-center justify-center gap-3">
       <h1 className="font-display text-[2rem] text-ink leading-none tracking-tight">
-        Z-salon
+        Se'ert
       </h1>
-      <p className="text-warm font-display italic text-xl">ዘsalon</p>
+      {/* <p className="text-warm font-display italic text-xl">ዘsalon</p> */}
       <svg
         className="animate-spin text-ink-3 mt-1"
         width="20" height="20" viewBox="0 0 24 24"

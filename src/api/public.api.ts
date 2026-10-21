@@ -1,5 +1,11 @@
+// src/api/public.api.ts
+
 import { http } from './http'
-import type { Appointment } from '../types/api'
+import type { Appointment, ConfirmationView } from '../types/api'
+
+/* ------------------------------------------------------------------ */
+/*  Input types                                                        */
+/* ------------------------------------------------------------------ */
 
 export interface PublicBookingInput {
   verificationToken: string
@@ -21,7 +27,15 @@ export interface PublicReceiptInput {
   customerNote?: string
 }
 
+/* ------------------------------------------------------------------ */
+/*  API                                                                */
+/* ------------------------------------------------------------------ */
+
 export const publicApi = {
+  /* ---------------------------------------------------------------- */
+  /*  Public booking                                                    */
+  /* ---------------------------------------------------------------- */
+
   createBooking: (businessId: string, input: PublicBookingInput) =>
     http.post<Appointment>(
       `/public/businesses/${businessId}/bookings`,
@@ -40,30 +54,43 @@ export const publicApi = {
       { auth: false },
     ),
 
-  /* Tokenized SMS confirmation links (§10.4) */
+  /* ---------------------------------------------------------------- */
+  /*  Tokenized SMS confirmation links (§10.4)                          */
+  /*                                                                    */
+  /*  The customer's SMS contains a URL like:                           */
+  /*    https://frontend.example.com/appointments/confirm/{token}       */
+  /*  The frontend extracts the token from the route and sends it back  */
+  /*  to these endpoints. The response is a reduced `ConfirmationView`  */
+  /*  (branch as a nested object, `staffName` flat, `businessName`,     */
+  /*  and a server-computed `actions` policy) — not the admin           */
+  /*  `Appointment` shape.                                              */
+  /* ---------------------------------------------------------------- */
+
   viewConfirmation: (token: string) =>
-    http.get<Appointment>(`/public/appointments/confirm/${token}`, {
+    http.get<ConfirmationView>(`/public/appointments/confirm/${token}`, {
       auth: false,
     }),
 
   confirm: (token: string) =>
-    http.post<Appointment>(
+    http.post<ConfirmationView>(
       `/public/appointments/confirm/${token}/confirm`,
       {},
       { auth: false },
     ),
 
   cancelConfirmation: (token: string, reason?: string) =>
-    http.post<Appointment>(
+    http.post<ConfirmationView>(
       `/public/appointments/confirm/${token}/cancel`,
       { reason },
       { auth: false },
     ),
 
   rescheduleConfirmation: (token: string, newStartTime: string) =>
-    http.post<Appointment>(
+    http.post<ConfirmationView>(
       `/public/appointments/confirm/${token}/reschedule`,
       { newStartTime },
       { auth: false },
     ),
 }
+
+export default publicApi

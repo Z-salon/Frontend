@@ -28,7 +28,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
-      customerDevFallback(), 
+      customerDevFallback(),
       figmaSiteConfiguration(siteConfiguration),
       figmaErrorOverlayReplay(),
       figmaReactRefreshBoundaryFallback(),
@@ -97,13 +97,33 @@ type FigmaSiteConfiguration = {
   }
 }
 
+/**
+ * Dev-only: routes customer-facing paths to `customer.html` instead of
+ * `index.html` (the admin SPA). Without this, customer links like
+ * `/book/...`, `/appointments/confirm/...`, and `/feedback/...` would
+ * load the admin shell, which has no route for them and 404s.
+ *
+ * In production, the equivalent must be a rewrite rule on whatever
+ * serves the built assets (nginx, CloudFront, Vercel, etc.), or a
+ * separate subdomain for the customer app.
+ */
 function customerDevFallback(): Plugin {
+  /** Path prefixes owned by the customer app. */
+  const CUSTOMER_PREFIXES = [
+    '/book/',
+    '/appointments/confirm/',
+    '/feedback/',
+  ]
+
   return {
     name: 'customer-dev-fallback',
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use((req, _res, next) => {
-        if (req.url && req.url.startsWith('/book/')) {
+        if (
+          req.url &&
+          CUSTOMER_PREFIXES.some(prefix => req.url!.startsWith(prefix))
+        ) {
           req.url = '/customer.html'
         }
         next()
@@ -124,7 +144,7 @@ function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
     return html.replace(`<!-- ${slotName} -->`, content)
   }
 
-  const title = config.title ?? "Z-Salon"
+  const title = config.title ?? "Se'ert"
   const description = config.description ?? ''
   const favicon = config.icons?.icon ?? ''
   const socialImage = config.openGraph?.image ?? ''

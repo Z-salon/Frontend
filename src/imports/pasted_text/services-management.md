@@ -1,11 +1,11 @@
-You are continuing development of the existing Z-salon frontend prototype.
+You are continuing development of the existing Se'ert frontend prototype.
 
 IMPORTANT:
 This is NOT a new project.
 
 The existing frontend has already been implemented for:
 
-- Z-salon brand and design system
+- Se'ert brand and design system
 - Authentication
 - Salon onboarding
 - Business setup
@@ -77,14 +77,14 @@ After implementation, all previously completed flows must continue working.
 
 
 ==================================================
-Z-SALON DESIGN SYSTEM
+Se'ert DESIGN SYSTEM
 ==================================================
 
-Continue using the existing Z-salon visual identity.
+Continue using the existing Se'ert visual identity.
 
 Brand:
 
-Z-salon
+Se'ert
 ዘsalon
 
 Core colors:
@@ -664,7 +664,7 @@ This is for salons with multiple locations.
 
 Example:
 
-Z-salon
+Se'ert
 
 Bole
 Kazanchis
@@ -1589,7 +1589,7 @@ Do not replace working components.
 
 Do not modify existing UI just for stylistic preference.
 
-The objective is to EXTEND the existing Z-salon prototype while preserving everything that has already been built.
+The objective is to EXTEND the existing Se'ert prototype while preserving everything that has already been built.
 
 
 FINAL RESULT:

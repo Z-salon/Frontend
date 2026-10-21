@@ -8,6 +8,7 @@ import type {
   FeedbackSubmitInput,
   FeedbackSubmitResponse,
   FeedbackListQuery,
+  FeedbackListResponse,
   FeedbackResendResult,
 } from '../types/api'
 
@@ -56,6 +57,11 @@ export const feedbackApi = {
   /*  §12.4 Admin — list submissions                                  */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * `GET /businesses/{businessId}/feedback`
+   *
+   * Returns a paginated envelope: `{ data: FeedbackSubmission[], meta }`.
+   */
   list: (businessId: string, query?: FeedbackListQuery) => {
     const qs = new URLSearchParams()
     if (query?.page != null) qs.set('page', String(query.page))
@@ -67,7 +73,7 @@ export const feedbackApi = {
     if (query?.is_anonymous != null)
       qs.set('is_anonymous', String(query.is_anonymous))
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
-    return http.get<FeedbackSubmission[]>(
+    return http.get<FeedbackListResponse>(
       `/businesses/${businessId}/feedback${suffix}`,
     )
   },
@@ -84,6 +90,26 @@ export const feedbackApi = {
   detail: (businessId: string, submissionId: string) =>
     http.get<FeedbackSubmission>(
       `/businesses/${businessId}/feedback/${submissionId}`,
+    ),
+
+  /* ---------------------------------------------------------------- */
+  /*  §12.6 Admin — feedback request for an appointment               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `GET /businesses/{businessId}/appointments/{appointmentId}/feedback-request`
+   *
+   * Read-only. Returns the request status plus the shareable `url` and
+   * `qr_code_url` derived server-side from the encrypted token copy.
+   * Never creates a request or rotates the token.
+   *
+   * Errors:
+   *   404 APPOINTMENT_NOT_FOUND      — appointment not in this business
+   *   404 FEEDBACK_REQUEST_NOT_FOUND — no request exists for this appointment
+   */
+  getRequest: (businessId: string, appointmentId: string) =>
+    http.get(
+      `/businesses/${businessId}/appointments/${appointmentId}/feedback-request`,
     ),
 
   /* ---------------------------------------------------------------- */

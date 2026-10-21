@@ -6,22 +6,22 @@ import type { FeedbackSubmission } from '../types/api'
 /*  Appointment → feedback lookup (admin)                              */
 /*                                                                     */
 /*  The backend mints exactly one FeedbackRequest per appointment      */
-/*  (`UNIQUE(appointment_id)`) when it reaches COMPLETED, and only     */
-/*  stores the token's SHA-256 hash — so the raw link is unrecoverable */
-/*  and cannot be shown here. What the admin CAN do is see whether the  */
-/*  customer responded, and open that response.                        */
+/*  (`UNIQUE(appointment_id)`) when it reaches COMPLETED. The token is  */
+/*  stored as a SHA-256 hash for lookup plus an AES-256-GCM encrypted   */
+/*  copy so the shareable URL can be recovered for admin display.       */
 /*                                                                     */
-/*  Two honest caveats, both properties of the API rather than bugs:   */
+/*  This hook does two things:                                         */
+/*    1. Fetches the shareable URL from the dedicated GET endpoint      */
+/*       (`…/appointments/:id/feedback-request`). Read-only.            */
+/*    2. Finds the submission (if any) for the appointment via the      */
+/*       admin list, because the list query has no `appointment_id`     */
+/*       filter — we narrow with a `submitted_at` window instead.       */
 /*                                                                     */
-/*  1. `FeedbackListQuery` has no `appointment_id` filter, so matching  */
-/*     happens client-side. We narrow the query with a `submitted_at`  */
-/*     date window instead of paging the whole business — a request is */
-/*     created at completion and expires 7 days later, so a ±60 day    */
-/*     window around the appointment covers every possible response.   */
-/*  2. Anonymous submissions come back with `appointment: null`, so     */
-/*     they cannot be attributed to any appointment. A customer who    */
-/*     responds anonymously therefore reads as "awaiting" here even    */
-/*     though their response is in the Feedback page.                  */
+/*  One honest caveat that is a property of the API, not a bug:         */
+/*  anonymous submissions come back with `appointment: null`, so they   */
+/*  cannot be attributed to any appointment. A customer who responds    */
+/*  anonymously therefore reads as "awaiting" here even though their    */
+/*  response is visible on the Feedback page.                           */
 /* ------------------------------------------------------------------ */
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -33,7 +33,7 @@ export type AppointmentFeedbackState =
   /** Not applicable — the appointment isn't COMPLETED. */
   | 'inactive'
   | 'loading'
-  /** No attributable response yet. See caveat 2 above. */
+  /** No attributable response yet. See caveat above. */
   | 'awaiting'
   | 'received'
   /** Lookup failed — never block the panel on this. */
@@ -42,6 +42,12 @@ export type AppointmentFeedbackState =
 export interface AppointmentFeedback {
   state: AppointmentFeedbackState
   submission: FeedbackSubmission | null
+  /**
+   * The customer-facing feedback URL, when the request exists. `null`
+   * while loading, when the request 404s (appointment predates the
+   * feature, or feedback was disabled at completion), or on fetch error.
+   */
+  url: string | null
   reload: () => void
   /**
    * Asks the backend to re-mint the token and re-send the link. Resolves to
@@ -55,8 +61,8 @@ export interface AppointmentFeedback {
 }
 
 /**
- * Defensive unwrap. `http` already returns `data`, but several admin
- * screens guard against serializers that nest the array one level deeper.
+ * Defensive unwrap for array payloads. `http` already returns `data`, but
+ * some admin serializers nest the array one level deeper.
  */
 function unwrapArray<T>(res: unknown): T[] {
   const anyRes = res as any
@@ -81,6 +87,7 @@ export function useAppointmentFeedback(
 ): AppointmentFeedback {
   const [state, setState] = useState<AppointmentFeedbackState>('inactive')
   const [submission, setSubmission] = useState<FeedbackSubmission | null>(null)
+  const [url, setUrl] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
 
   const reload = useCallback(() => setNonce(n => n + 1), [])
@@ -94,6 +101,7 @@ export function useAppointmentFeedback(
     if (!appointmentId || status !== 'COMPLETED' || !businessId) {
       setState('inactive')
       setSubmission(null)
+      setUrl(null)
       return
     }
 
@@ -101,6 +109,26 @@ export function useAppointmentFeedback(
     setState('loading')
 
     void (async () => {
+      // ── Fetch the shareable URL ─────────────────────────────────────
+      //
+      // Read-only. 404 just means no request exists for this appointment
+      // (feature predates the visit, or feedback was disabled at
+      // completion). We stay silent and leave `url` as null.
+      try {
+        const res = await feedbackApi.getRequest(businessId, appointmentId)
+        if (cancelled) return
+        const d: any = (res as any)?.data ?? res
+        setUrl(d?.url ?? null)
+      } catch {
+        if (cancelled) return
+        setUrl(null)
+      }
+
+      // ── Find the submission for this appointment ───────────────────
+      //
+      // The list has no `appointment_id` filter, so we narrow by date
+      // window and match client-side. Anonymous submissions can't be
+      // attributed — see the header comment.
       try {
         const win = scheduledStart ? windowFor(scheduledStart) : null
         const res = await feedbackApi.list(businessId, {
@@ -109,7 +137,6 @@ export function useAppointmentFeedback(
         })
         if (cancelled) return
 
-        // One request per appointment, so at most one match.
         const match =
           unwrapArray<FeedbackSubmission>(res).find(
             s => s.appointment?.id === appointmentId,
@@ -141,5 +168,5 @@ export function useAppointmentFeedback(
     }
   }, [businessId, appointmentId])
 
-  return { state, submission, reload, resend }
+  return { state, submission, url, reload, resend }
 }

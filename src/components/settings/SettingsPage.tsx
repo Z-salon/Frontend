@@ -638,12 +638,12 @@ function BrandingSettings({
             >
               {businessName}
             </p>
-            <p
+            {/* <p
               className="font-display italic text-lg"
               style={{ color: secondary, opacity: 0.75 }}
             >
               ዘsalon
-            </p>
+            </p> */}
           </div>
         </div>
 

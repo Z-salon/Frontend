@@ -13,6 +13,13 @@ import type {
   AppointmentPaymentsInput,
   AppointmentPayment,
   AppointmentFinancials,
+  AppointmentFollowUp,
+  AppointmentFollowUpList,
+  AppointmentFollowUpQuery,
+  ResolveAppointmentFollowUpInput,
+  AppointmentReminder,
+  AppointmentRemindersResponse,
+  AppointmentConfirmationLinkResponse,
 } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -124,6 +131,10 @@ export const appointmentsApi = {
   /*  §5.3 — Get one                                                   */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * Returns the standard appointment object plus `needsFollowUp`,
+   * `followUp`, and `reminders` (see the Reminder/Follow-up API doc §1).
+   */
   get: (businessId: string, appointmentId: string) =>
     http.get<Appointment>(
       `/businesses/${businessId}/appointments/${appointmentId}`,
@@ -385,6 +396,127 @@ export const appointmentsApi = {
   listPayments: (businessId: string, appointmentId: string) =>
     http.get<AppointmentPayment[]>(
       `/businesses/${businessId}/appointments/${appointmentId}/payments`,
+    ),
+
+  /* ---------------------------------------------------------------- */
+  /*  §A1 — Reminder history for an appointment                        */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `GET /businesses/:businessId/appointments/:appointmentId/reminders`
+   *
+   * Returns the full reminder timeline for the appointment. Reminders are
+   * only scheduled for CONFIRMED appointments on branches with
+   * `customerConfirmationEnabled=true`; appointments that don't qualify
+   * come back with an empty `reminders` array.
+   *
+   * See the Reminder/Follow-up API doc §2.
+   */
+  listReminders: (businessId: string, appointmentId: string) =>
+    http.get<AppointmentRemindersResponse>(
+      `/businesses/${businessId}/appointments/${appointmentId}/reminders`,
+    ),
+
+  /* ---------------------------------------------------------------- */
+  /*  §A2 — Staff follow-up list                                       */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `GET /businesses/:businessId/appointment-follow-ups`
+   *
+   * Paginated list of staff follow-ups. A follow-up is raised when the
+   * confirmation deadline passes without a customer response; it does NOT
+   * auto-cancel the appointment. Filterable by branch and status.
+   *
+   * See the Reminder/Follow-up API doc §3.
+   */
+  listFollowUps: (
+    businessId: string,
+    query?: AppointmentFollowUpQuery,
+  ) => {
+    const qs = new URLSearchParams()
+    if (query?.branchId)     qs.set('branchId', query.branchId)
+    if (query?.status)       qs.set('status', query.status)
+    if (query?.page  != null) qs.set('page',  String(query.page))
+    if (query?.limit != null) qs.set('limit', String(query.limit))
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return http.get<AppointmentFollowUpList>(
+      `/businesses/${businessId}/appointment-follow-ups${suffix}`,
+    )
+  },
+
+  /* ---------------------------------------------------------------- */
+  /*  §A3 — Resolve a follow-up                                        */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `PATCH /businesses/:businessId/appointment-follow-ups/:followUpId`
+   *
+   * Atomically claims the follow-up (must be OPEN) and resolves it with
+   * one of the allowed outcomes. The claim is rolled back if the
+   * underlying appointment transition fails.
+   *
+   *   CONFIRMED   — confirms attendance via the standard confirmation path
+   *   CANCELLED   — cancels the appointment via the standard cancel path
+   *   RESCHEDULED — reschedules; `newStartTime` is required, the reminder
+   *                 schedule version is bumped, and a new follow-up may be
+   *                 raised for the new time
+   *
+   * There is no UNREACHABLE outcome.
+   *
+   * See the Reminder/Follow-up API doc §4.
+   */
+  resolveFollowUp: (
+    businessId: string,
+    followUpId: string,
+    input: ResolveAppointmentFollowUpInput,
+  ) =>
+    http.patch<AppointmentFollowUp>(
+      `/businesses/${businessId}/appointment-follow-ups/${followUpId}`,
+      input,
+    ),
+
+  /* ---------------------------------------------------------------- */
+  /*  §A4 — Reopen a follow-up                                         */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `POST /businesses/:businessId/appointment-follow-ups/:followUpId/reopen`
+   *
+   * Reopens a RESOLVED follow-up as OPEN. A new row is created so the
+   * original resolution and its history are preserved. Rejects with an
+   * error if the follow-up is already OPEN.
+   *
+   * Returns the newly created OPEN follow-up.
+   *
+   * See the Reminder/Follow-up API doc §5.
+   */
+  reopenFollowUp: (businessId: string, followUpId: string) =>
+    http.post<AppointmentFollowUp>(
+      `/businesses/${businessId}/appointment-follow-ups/${followUpId}/reopen`,
+    ),
+  
+  /* ---------------------------------------------------------------- */
+  /*  Customer confirmation link (dev-only)                            */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `POST /businesses/:businessId/appointments/:appointmentId/confirmation-link`
+   *
+   * Returns a fresh customer action link for this appointment. The
+   * endpoint is **disabled in production** (404s) and does not send an
+   * SMS — it exists so staff can grab the link during local development
+   * when SMS delivery isn't configured.
+   *
+   * Response:
+   *   { success: true, data: { token, confirmationUrl } }
+   *
+   * Errors:
+   *   404 — endpoint disabled (production), or appointment not found
+   */
+  confirmationLink: (businessId: string, appointmentId: string) =>
+    http.post<AppointmentConfirmationLinkResponse>(
+      `/businesses/${businessId}/appointments/${appointmentId}/confirmation-link`,
     ),
 }
 

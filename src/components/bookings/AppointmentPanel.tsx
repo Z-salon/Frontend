@@ -1,4 +1,4 @@
-// src/components/appointments/AppointmentPanel.tsx
+// src/components/bookings/AppointmentPanel.tsx
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
@@ -6,6 +6,12 @@ import type {
   AppointmentStatus,
   AppointmentStaffRef,
   AppointmentReceipt,
+  AppointmentReminder,
+  AppointmentReminderType,
+  AppointmentReminderStatus,
+  AppointmentFollowUp,
+  AppointmentFollowUpOutcome,
+  ResolveAppointmentFollowUpInput,
 } from '../../types/api'
 import { StatusBadge, Avatar, Button, Modal } from '../ui'
 import { useToast } from '../ui/Toast'
@@ -58,6 +64,12 @@ interface PanelProps {
    * post-visit feedback block; omitted, the block renders read-only.
    */
   onViewFeedback?: (submissionId: string) => void
+  /**
+   * Refetch callback. The follow-up/reminder sections call this after a
+   * resolve so the panel sees fresh `needsFollowUp` / `followUp` /
+   * `reminders` state. If omitted, the panel only updates its local copy.
+   */
+  onRefresh?: () => void
 }
 
 /* ------------------------------------------------------------------ */
@@ -151,10 +163,6 @@ function formatAmPm(hhmm: string): string {
  * Build an ISO string combining the *date* of `anchorIso` with the
  * wall-clock time given by `hhmm`, interpreting the time in the given
  * IANA timezone.
- *
- * For a single-timezone deployment (Africa/Addis_Ababa, +03:00, no DST)
- * this produces an exact instant. For other zones it's best-effort and
- * the server will sanity-check (`actualEnd` must be after `scheduledStart`).
  */
 function composeActualEnd(
   anchorIso: string,
@@ -193,25 +201,51 @@ function nowHHmmInTZ(timezone: string): string {
   return hhmmInTZ(new Date().toISOString(), timezone)
 }
 
+/**
+ * Compose an ISO from a `YYYY-MM-DD` date string + `HH:mm` time, in the
+ * given IANA timezone. Mirror of {@link composeActualEnd} with a different
+ * anchor — used by the reschedule picker.
+ */
+function composeDateTimeInTZ(
+  ymd: string,
+  hhmm: string,
+  _timezone: string,
+): string | null {
+  const dateParts = ymd.split('-').map(Number)
+  const timeParts = hhmm.split(':').map(Number)
+  if (dateParts.length !== 3 || timeParts.length !== 2) return null
+  const [y, mo, d] = dateParts
+  const [h, m] = timeParts
+  if ([y, mo, d, h, m].some(n => Number.isNaN(n))) return null
+  const local = new Date(y, mo - 1, d, h, m, 0, 0)
+  return local.toISOString()
+}
+
+/** `YYYY-MM-DD` in the given IANA timezone. */
+function ymdInTZ(iso: string, timezone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(iso))
+}
+
 /* ------------------------------------------------------------------ */
 /*  TimePicker — typable single field with overflow dropdown           */
 /* ------------------------------------------------------------------ */
 
 interface TimePickerProps {
-  /** "HH:mm" 24-hour. */
   value: string
   onChange: (hhmm: string) => void
-  /** Step between options, in minutes. Default 15. */
   stepMinutes?: number
   label?: string
   hint?: string
   error?: string
-  /** Optional shortcut that sets the picker to "now" in the target zone. */
   onNow?: () => void
   disabled?: boolean
 }
 
-/** Build the option list at a given step. */
 function buildTimeOptions(
   stepMinutes: number,
 ): Array<{ value: string; label: string }> {
@@ -225,16 +259,10 @@ function buildTimeOptions(
   return out
 }
 
-/**
- * Parse loose user input into "HH:mm" (24h).
- * Accepts: "2:30 pm", "230p", "1430", "14:30", "2pm", "14", "9:05a".
- * Returns null if the input doesn't resolve to a valid time.
- */
 function parseTimeInput(raw: string): string | null {
   if (!raw) return null
   const s = raw.trim().toLowerCase().replace(/\s+/g, '')
 
-  // Detect meridiem suffix
   let meridiem: 'AM' | 'PM' | null = null
   let body = s
   if (body.endsWith('am')) {
@@ -285,7 +313,6 @@ function parseTimeInput(raw: string): string | null {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
-/** Snap an arbitrary "HH:mm" to the nearest step boundary. */
 function snapToStep(hhmm: string, stepMinutes: number): string {
   const [hStr, mStr] = hhmm.split(':')
   const total = Number(hStr) * 60 + Number(mStr)
@@ -579,21 +606,11 @@ export function AppointmentPanel({
   onClose,
   onChanged,
   onViewFeedback,
+  onRefresh,
 }: PanelProps) {
   const toast = useToast()
   const [busyKey, setBusyKey] = useState<string | null>(null)
 
-  /**
-   * The panel keeps its own copy of the appointment so a local write
-   * (approve a receipt, change status, complete) reflects immediately,
-   * without waiting for the parent to re-thread a new prop.
-   *
-   * Re-sync policy: only when the *identity* changes (a different
-   * appointment is selected). An update to the same appointment — the
-   * parent refetch handing back a fresh object with the same id — does
-   * not clobber the panel's local state, which prevents the brief
-   * flicker that would happen if the parent's list lags the write.
-   */
   const [current, setCurrent] = useState<Appointment | null>(appointmentProp)
 
   const currentIdRef = useRef<string | null>(appointmentProp?.id ?? null)
@@ -604,15 +621,10 @@ export function AppointmentPanel({
       currentIdRef.current = nextId
       setCurrent(appointmentProp)
     } else if (
-      // Same id but the parent handed us something meaningfully newer
-      // (e.g. it refetched and the server value is now available). We
-      // accept it only when the panel isn't mid-write — busyKey is null.
       busyKey === null &&
       appointmentProp !== null &&
       current !== null &&
       appointmentProp !== current &&
-      // Only accept if the status actually differs. Otherwise ignore —
-      // the parent may pass a re-created object on every render.
       appointmentProp.status !== current.status
     ) {
       setCurrent(appointmentProp)
@@ -623,7 +635,6 @@ export function AppointmentPanel({
   const appointmentId = appointment?.id ?? null
   const appointmentStatus = appointment?.status ?? null
 
-  /** Apply a locally-changed appointment and let the parent know. */
   const applyLocal = (updated: Appointment) => {
     setCurrent(updated)
     onChanged(updated)
@@ -638,27 +649,94 @@ export function AppointmentPanel({
   const [cancelRefund, setCancelRefund] = useState(true)
   const [submittingCancel, setSubmittingCancel] = useState(false)
 
-  // Completion modal state
   const [showComplete, setShowComplete] = useState(false)
-  const [completeTime, setCompleteTime] = useState('') // "HH:mm" 24h
+  const [completeTime, setCompleteTime] = useState('')
   const [submittingComplete, setSubmittingComplete] = useState(false)
 
   const [sendingFeedback, setSendingFeedback] = useState(false)
 
-  // Service usage — recorded while completing, then read-only afterwards.
   const serviceUsage = useServiceUsages(businessId, appointmentId ?? undefined, appointmentStatus ?? undefined)
   const [completeDraft, setCompleteDraft] = useState<ServiceUsageDraft>(emptyDraft())
   const [completeUsageError, setCompleteUsageError] = useState<string | null>(null)
 
-  // Payments recorded in the same modal. `paidTotal` already includes anything
-  // recorded earlier, so the outstanding hint stays accurate.
   const payments = useAppointmentPayments(businessId, appointmentId ?? undefined)
   const [completePayDraft, setCompletePayDraft] = useState<PaymentsDraft>(emptyPaymentsDraft())
   const [completePayError, setCompletePayError] = useState<string | null>(null)
 
-  // Post-visit feedback. Only meaningful once the appointment is COMPLETED,
-  // and the hook stays idle for every other status.
   const feedback = useAppointmentFeedback(businessId, appointment)
+
+  /* ── Reminder / follow-up ──────────────────────────────────────── */
+
+  const [showResolveFollowUp, setShowResolveFollowUp] = useState(false)
+  const [remindersExpanded, setRemindersExpanded] = useState(false)
+
+  /**
+   * `reminders` and `followUp` come straight off the appointment object
+   * returned by the single-get endpoint (§1 of the reminder API doc). No
+   * separate fetch is needed — `appointmentsApi.get` already returns them.
+   */
+  const reminders = appointment?.reminders ?? []
+  const openFollowUp: AppointmentFollowUp | null =
+    appointment?.followUp && appointment.followUp.status === 'OPEN'
+      ? appointment.followUp
+      : null
+
+  /**
+   * The follow-up block belongs to CONFIRMED appointments only — per the
+   * reminder doc, follow-ups are raised when a CONFIRMED appointment
+   * passes its confirmation deadline. PENDING appointments never get one.
+   */
+  const showFollowUpBlock =
+    appointmentStatus === 'CONFIRMED' &&
+    (openFollowUp !== null || appointment?.needsFollowUp === true)
+
+  /* ── Customer confirmation link (dev-only endpoint) ──────────────
+   *
+   * Only fetched for CONFIRMED appointments. PENDING is the deposit-
+   * verification stage — the customer hasn't got a live appointment yet,
+   * so there's nothing to cancel or re-confirm. Once staff confirm the
+   * deposit and the appointment flips to CONFIRMED, the customer gets a
+   * link that lets them keep or cancel the booking. */
+
+  const [confirmLink, setConfirmLink] = useState<string | null>(null)
+  const [confirmLinkLoading, setConfirmLinkLoading] = useState(false)
+
+  useEffect(() => {
+    if (!appointmentId) {
+      setConfirmLink(null)
+      return
+    }
+    if (appointmentStatus !== 'CONFIRMED') {
+      setConfirmLink(null)
+      return
+    }
+
+    let cancelled = false
+    setConfirmLinkLoading(true)
+    appointmentsApi
+      .confirmationLink(businessId, appointmentId)
+      .then(res => {
+        if (cancelled) return
+        // `http` may or may not unwrap the envelope, so tolerate both.
+        // Response shape: { success, data: { token, confirmationUrl } }
+        const d: any = (res as any)?.data ?? res
+        setConfirmLink(d?.confirmationUrl ?? null)
+      })
+      .catch(() => {
+        // 404 = endpoint disabled in production, or the appointment isn't
+        // in a state that supports it. Silent — the block just renders
+        // without a link.
+        if (cancelled) return
+        setConfirmLink(null)
+      })
+      .finally(() => {
+        if (!cancelled) setConfirmLinkLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [businessId, appointmentId, appointmentStatus])
 
   /* ── Receipt: fetch when the appointment is PENDING ──────────────── */
 
@@ -672,9 +750,6 @@ export function AppointmentPanel({
       setReceipt(null)
       return
     }
-    // The receipt block only lives while the appointment is PENDING.
-    // After approval the appointment flips to CONFIRMED and the payment
-    // moves into the Payments section, so we stop fetching.
     if (appointmentStatus !== 'PENDING') {
       setReceipt(null)
       return
@@ -689,8 +764,6 @@ export function AppointmentPanel({
         setReceipt(r)
       })
       .catch(() => {
-        // 404 = no receipt yet. Normal for a PENDING appointment waiting
-        // on the customer, so stay silent.
         if (cancelled) return
         setReceipt(null)
       })
@@ -770,9 +843,6 @@ export function AppointmentPanel({
 
         if (action.prompt === 'actualEnd') {
           setCompleteTime(endTime)
-          // Prefill with what was booked — staff usually confirm it rather
-          // than retype, and it keeps the record consistent with the
-          // appointment even if the catalogue name changed since booking.
           setCompleteDraft(emptyDraft(appointment.service.name))
           setCompleteUsageError(null)
           setCompletePayDraft(emptyPaymentsDraft())
@@ -826,7 +896,6 @@ export function AppointmentPanel({
     if (!appointment) return
     if (completeInvalid || !previewActualEnd) return
 
-    // Validate everything before any write, so we never half-complete.
     const wantsUsage = !isDraftEmpty(completeDraft)
     if (wantsUsage) {
       const invalid = validateDraft(completeDraft)
@@ -849,11 +918,6 @@ export function AppointmentPanel({
     setCompleteUsageError(null)
     setCompletePayError(null)
 
-    // Usage is saved FIRST, while the appointment is still IN_PROGRESS —
-    // §6.1 accepts CHECKED_IN / IN_PROGRESS / COMPLETED. If the usage write
-    // fails we abort rather than completing, because once the appointment is
-    // COMPLETED the staff member has moved on and the entry is easy to forget.
-    // `add` resolves null on failure rather than throwing.
     let usageSaved = false
     if (wantsUsage) {
       const created = await serviceUsage.add(draftToInput(completeDraft))
@@ -867,9 +931,6 @@ export function AppointmentPanel({
       usageSaved = true
     }
 
-    // Payments next. Each block is optional, but a block the user filled in
-    // must succeed — otherwise we'd complete the appointment and silently
-    // drop what they recorded.
     let paymentSaved = false
     if (wantsPayment) {
       const input = paymentsDraftToInput(completePayDraft)
@@ -916,9 +977,6 @@ export function AppointmentPanel({
       ].filter(Boolean) as string[]
 
       if (savedBits.length) {
-        // Those blocks are persisted but the appointment is still
-        // IN_PROGRESS. Say so plainly — otherwise the natural response is to
-        // re-enter them and create duplicate records.
         toast.error(
           `${savedBits.join(' and ')} saved, but completing the appointment failed. Retry "Mark as complete" — do not add them again.`,
         )
@@ -989,8 +1047,13 @@ export function AppointmentPanel({
 
         <div className="flex-1 overflow-y-auto">
           <div className="px-5 pt-5 pb-4 border-b border-line">
-            <div className="mb-4">
+            <div className="mb-4 flex items-center gap-2 flex-wrap">
               <StatusBadge status={appointment.status} />
+              {appointment.needsFollowUp && (
+                <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#FBF0E8] text-[#8A4B1F]">
+                  Follow-up
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <Avatar name={name} size="lg" />
@@ -1003,8 +1066,11 @@ export function AppointmentPanel({
             </div>
           </div>
 
-          {/* ── Pending receipt block (only for PENDING appointments) ── */}
-
+          {/* ── PENDING: deposit verification only ──────────────────────
+              At this stage the customer has been asked to send a deposit
+              receipt. The only job here is verifying that receipt — the
+              customer has no live appointment yet, so no confirmation
+              link and no follow-up. */}
           {appointment.status === 'PENDING' && (
             <div className="px-5 py-4 border-b border-line">
               <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
@@ -1062,6 +1128,15 @@ export function AppointmentPanel({
                   No receipt yet — waiting on the customer.
                 </p>
               )}
+
+              {/* A short hint so the receptionist knows what the next step
+                  is. Once the deposit is approved, the appointment flips
+                  to CONFIRMED and the customer link appears there. */}
+              <p className="mt-3 text-xs text-ink-3 leading-relaxed">
+                Approve the deposit to confirm the appointment. The customer
+                confirmation link becomes available once the appointment is
+                confirmed.
+              </p>
             </div>
           )}
 
@@ -1082,6 +1157,120 @@ export function AppointmentPanel({
             </div>
           </div>
 
+          {/* ── CONFIRMED: customer link + follow-up ────────────────────
+              The appointment is now live. The customer can keep or cancel
+              it from the link below. If the confirmation deadline passed
+              without a response, the follow-up block appears underneath. */}
+          {appointment.status === 'CONFIRMED' && (
+            <div className="px-5 py-4 border-b border-line bg-warm-subtle/30">
+              <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-2">
+                Customer confirmation link
+              </p>
+              <p className="text-sm text-ink-2 leading-relaxed mb-3">
+                Share this with the customer if they want to review, keep, or
+                cancel their appointment.
+              </p>
+
+              {confirmLinkLoading && (
+                <p className="text-xs text-ink-3 mb-3">
+                  Loading confirmation link…
+                </p>
+              )}
+
+              {!confirmLinkLoading && confirmLink && (
+                <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="text-[11px] text-ink-3">
+                      Confirmation link
+                    </p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(confirmLink)
+                          toast.success('Confirmation link copied.')
+                        } catch {
+                          toast.error('Could not copy the link.')
+                        }
+                      }}
+                      className="text-[11px] text-ink-3 hover:text-ink transition-colors"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <a
+                    href={confirmLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-ink underline underline-offset-2 break-all hover:text-ink-2"
+                  >
+                    {confirmLink}
+                  </a>
+                </div>
+              )}
+
+              {/* No empty state. In production the dev-only endpoint 404s
+                  by design and there's genuinely no link to fetch — the
+                  customer receives it via SMS instead. */}
+            </div>
+          )}
+
+          {/* ── Follow-up block ────────────────────────────────────────
+              CONFIRMED-only. Fires when the confirmation deadline passed
+              without a customer response. Sits below the confirmation
+              link so the staff can act on the follow-up once they've
+              reached the customer. */}
+          {showFollowUpBlock && (
+            <div className="px-5 py-4 border-b border-line bg-[#FBF0E8]/40">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <p className="text-[10px] font-semibold text-[#8A4B1F] uppercase tracking-wider">
+                  Follow-up required
+                </p>
+              </div>
+
+              <p className="text-sm text-ink-2 leading-relaxed mb-3">
+                The confirmation deadline passed without a customer response.
+                Contact the customer and record the outcome. This does not
+                cancel the appointment automatically.
+              </p>
+
+              {openFollowUp ? (
+                <div className="flex flex-col gap-3">
+                  <div className="bg-bg rounded-xl px-3.5 py-3 flex flex-col gap-1.5 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-ink-3">Raised</span>
+                      <span className="text-ink">
+                        {new Date(openFollowUp.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    {openFollowUp.staffName && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-ink-3">Assigned</span>
+                        <span className="text-ink truncate">
+                          {openFollowUp.staffName}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    fullWidth
+                    onClick={() => setShowResolveFollowUp(true)}
+                  >
+                    Resolve follow-up
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-xs text-ink-3">
+                  Follow-up details are still loading. Refresh the appointment
+                  if this persists.
+                </p>
+              )}
+            </div>
+          )}
+
           {appointment.notes && (
             <div className="px-5 py-4">
               <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-3">
@@ -1090,6 +1279,56 @@ export function AppointmentPanel({
               <p className="text-sm text-ink-2 leading-relaxed">
                 {appointment.notes}
               </p>
+            </div>
+          )}
+
+          {/* ── Reminders block ─────────────────────────────────────── */}
+          {reminders.length > 0 && (
+            <div className="px-5 py-4 border-t border-line">
+              <button
+                type="button"
+                onClick={() => setRemindersExpanded(v => !v)}
+                className="w-full flex items-center justify-between gap-2 mb-1"
+                aria-expanded={remindersExpanded}
+              >
+                <span className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider">
+                  Confirmation reminders ({reminders.length})
+                </span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={`text-ink-3 transition-transform ${remindersExpanded ? 'rotate-180' : ''}`}
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+
+              {!remindersExpanded && (
+                <p className="text-xs text-ink-3 mt-1">
+                  {summarizeReminders(reminders)}
+                </p>
+              )}
+
+              {remindersExpanded && (
+                <div className="mt-3 flex flex-col gap-2">
+                  {reminders
+                    .slice()
+                    .sort(
+                      (a, b) =>
+                        new Date(a.scheduledAt).getTime() -
+                        new Date(b.scheduledAt).getTime(),
+                    )
+                    .map(r => (
+                      <ReminderRow key={r.id} reminder={r} />
+                    ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -1129,6 +1368,23 @@ export function AppointmentPanel({
                     this appointment was completed, and it stays open for seven
                     days.
                   </p>
+
+                  {feedback.url && (
+                    <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
+                      <p className="text-[11px] text-ink-3 mb-1">
+                        Feedback link
+                      </p>
+                      <a
+                        href={feedback.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-ink underline underline-offset-2 break-all hover:text-ink-2"
+                      >
+                        {feedback.url}
+                      </a>
+                    </div>
+                  )}
+
                   <Button
                     variant="secondary"
                     size="sm"
@@ -1175,12 +1431,29 @@ export function AppointmentPanel({
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm font-medium text-ink">
                       Response received
-                      {feedback.submission.isAnonymous && ' · anonymous'}
+                      {feedback.submission.is_anonymous && ' · anonymous'}
                     </span>
                     <span className="text-xs text-ink-3 flex-shrink-0">
-                      {new Date(feedback.submission.submittedAt).toLocaleDateString()}
+                      {new Date(feedback.submission.submitted_at).toLocaleDateString()}
                     </span>
                   </div>
+
+                  {feedback.url && (
+                    <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
+                      <p className="text-[11px] text-ink-3 mb-1">
+                        Feedback link
+                      </p>
+                      <a
+                        href={feedback.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-ink underline underline-offset-2 break-all hover:text-ink-2"
+                      >
+                        {feedback.url}
+                      </a>
+                    </div>
+                  )}
+
                   {onViewFeedback && (
                     <Button
                       variant="secondary"
@@ -1218,9 +1491,6 @@ export function AppointmentPanel({
               )
             })}
 
-            {/* Quick path into the reviewer when the deposit is what's
-                holding up the confirmation. Only shown when a PENDING
-                receipt exists. */}
             {appointment.status === 'PENDING' &&
               receipt?.status === 'PENDING' && (
                 <Button
@@ -1235,6 +1505,49 @@ export function AppointmentPanel({
           </div>
         )}
       </div>
+
+      {/* ── Resolve follow-up modal ──────────────────────────────────── */}
+      <ResolveFollowUpModal
+        open={showResolveFollowUp}
+        businessId={businessId}
+        followUp={openFollowUp}
+        timezone={timezone}
+        scheduledStart={appointment.scheduledStart}
+        onClose={() => setShowResolveFollowUp(false)}
+        onResolved={updated => {
+          setShowResolveFollowUp(false)
+
+          if (updated.outcome === 'CONFIRMED') {
+            applyLocal({
+              ...appointment,
+              status:
+                appointment.status === 'PENDING' ? 'CONFIRMED' : appointment.status,
+              confirmedAt:
+                appointment.confirmedAt ?? new Date().toISOString(),
+              needsFollowUp: false,
+              followUp: updated,
+            })
+          } else if (updated.outcome === 'CANCELLED') {
+            applyLocal({
+              ...appointment,
+              status: 'CANCELLED',
+              cancelledAt: new Date().toISOString(),
+              needsFollowUp: false,
+              followUp: updated,
+            })
+          } else if (updated.outcome === 'RESCHEDULED' && updated.newStartTime) {
+            applyLocal({
+              ...appointment,
+              scheduledStart: updated.newStartTime,
+              needsFollowUp: false,
+              followUp: updated,
+            })
+          }
+
+          toast.success('Follow-up resolved')
+          onRefresh?.()
+        }}
+      />
 
       {/* ── Receipt image modal (view-only) ─────────────────────────── */}
       <Modal
@@ -1308,23 +1621,12 @@ export function AppointmentPanel({
           if (!appointment) return
 
           if (updated.status === 'APPROVED') {
-            /**
-             * §7.3 — approving a PENDING receipt atomically confirms
-             * the appointment server-side. Mirror that locally so the
-             * panel flips to CONFIRMED immediately: the deposit block
-             * disappears, the status badge updates, and the action
-             * buttons change from Confirm/Cancel to Check in/No-show/
-             * Cancel.
-             */
             applyLocal({
               ...appointment,
               status: 'CONFIRMED',
               confirmedAt: appointment.confirmedAt ?? new Date().toISOString(),
             })
           } else if (updated.status === 'REJECTED') {
-            // The appointment stays PENDING. Show the rejection reason
-            // in the deposit block so the receptionist can tell the
-            // customer what to fix.
             setReceipt(updated)
           }
         }}
@@ -1564,14 +1866,271 @@ export function AppointmentPanel({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Resolve follow-up modal                                            */
+/* ------------------------------------------------------------------ */
+
+type FollowUpOutcomeChoice = AppointmentFollowUpOutcome
+
+function ResolveFollowUpModal({
+  open,
+  businessId,
+  followUp,
+  timezone,
+  scheduledStart,
+  onClose,
+  onResolved,
+}: {
+  open: boolean
+  businessId: string
+  followUp: AppointmentFollowUp | null
+  timezone: string
+  scheduledStart: string
+  onClose: () => void
+  onResolved: (updated: AppointmentFollowUp) => void
+}) {
+  const toast = useToast()
+
+  const [outcome, setOutcome] = useState<FollowUpOutcomeChoice>('CONFIRMED')
+  const [note, setNote] = useState('')
+  const [newDate, setNewDate] = useState(() => ymdInTZ(scheduledStart, timezone))
+  const [newTime, setNewTime] = useState(() => hhmmInTZ(scheduledStart, timezone))
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setOutcome('CONFIRMED')
+    setNote('')
+    setNewDate(ymdInTZ(scheduledStart, timezone))
+    setNewTime(hhmmInTZ(scheduledStart, timezone))
+  }, [open, scheduledStart, timezone])
+
+  const newStartIso =
+    outcome === 'RESCHEDULED'
+      ? composeDateTimeInTZ(newDate, newTime, timezone)
+      : null
+
+  const rescheduleInvalid =
+    outcome === 'RESCHEDULED' &&
+    (!newStartIso || Number.isNaN(Date.parse(newStartIso)))
+
+  async function submit() {
+    if (!followUp) return
+    if (rescheduleInvalid) return
+
+    setSubmitting(true)
+    try {
+      const input: ResolveAppointmentFollowUpInput =
+        outcome === 'RESCHEDULED'
+          ? {
+              outcome: 'RESCHEDULED',
+              newStartTime: newStartIso!,
+              note: note.trim() || undefined,
+            }
+          : {
+              outcome,
+              note: note.trim() || undefined,
+            }
+
+      const updated = await appointmentsApi.resolveFollowUp(
+        businessId,
+        followUp.id,
+        input,
+      )
+      onResolved(updated)
+    } catch (err) {
+      console.error('[follow-up] resolve failed', err)
+      toast.error(extractErrorMessage(err, 'Could not resolve the follow-up.'))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={() => !submitting && onClose()}
+      title="Resolve follow-up"
+      width="max-w-lg"
+    >
+      <div className="px-6 py-5 flex flex-col gap-4">
+        <p className="text-sm text-ink-2 leading-relaxed">
+          Record what happened when you reached the customer. The outcome is
+          applied to the appointment in the same operation.
+        </p>
+
+        <div className="flex flex-col gap-1.5">
+          <label className="text-sm font-medium text-ink-2">Outcome</label>
+          <div className="grid grid-cols-3 gap-2">
+            {(['CONFIRMED', 'CANCELLED', 'RESCHEDULED'] as const).map(o => {
+              const selected = outcome === o
+              return (
+                <button
+                  key={o}
+                  type="button"
+                  onClick={() => setOutcome(o)}
+                  disabled={submitting}
+                  className={`
+                    h-10 px-3 rounded-[10px] border text-sm font-medium
+                    transition-colors disabled:opacity-50
+                    ${selected
+                      ? 'border-ink bg-ink text-surface'
+                      : 'border-line bg-surface text-ink-2 hover:border-ink-3'}
+                  `}
+                >
+                  {o === 'CONFIRMED'
+                    ? 'Confirmed'
+                    : o === 'CANCELLED'
+                      ? 'Cancelled'
+                      : 'Rescheduled'}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {outcome === 'RESCHEDULED' && (
+          <div className="flex flex-col gap-3 border-t border-line pt-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink-2">
+                New date
+              </label>
+              <input
+                type="date"
+                value={newDate}
+                onChange={e => setNewDate(e.target.value)}
+                disabled={submitting}
+                className="h-10 px-3 rounded-[10px] border border-line text-sm bg-surface text-ink focus:outline-none focus:border-warm disabled:opacity-50"
+              />
+            </div>
+
+            <TimePicker
+              label="New time"
+              value={newTime}
+              onChange={setNewTime}
+              onNow={() => setNewTime(nowHHmmInTZ(timezone))}
+              disabled={submitting}
+            />
+
+            {rescheduleInvalid && (
+              <p className="text-xs text-[#B06A3A]">
+                Pick a valid date and time.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-col gap-1.5 border-t border-line pt-4">
+          <label className="text-sm font-medium text-ink-2">
+            Note (optional)
+          </label>
+          <textarea
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            rows={3}
+            disabled={submitting}
+            placeholder="e.g. Called at 10:15, customer confirmed."
+            className="w-full px-3 py-2.5 rounded-[10px] border border-line text-sm bg-surface text-ink placeholder:text-ink-3 focus:outline-none focus:border-warm resize-none disabled:opacity-50"
+          />
+        </div>
+      </div>
+
+      <div className="px-6 pb-6 flex gap-3 justify-end border-t border-line pt-4">
+        <Button variant="ghost" onClick={onClose} disabled={submitting}>
+          Cancel
+        </Button>
+        <Button
+          onClick={() => void submit()}
+          loading={submitting}
+          disabled={submitting || rescheduleInvalid}
+        >
+          Resolve
+        </Button>
+      </div>
+    </Modal>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Reminder row + summary                                             */
+/* ------------------------------------------------------------------ */
+
+function ReminderRow({ reminder }: { reminder: AppointmentReminder }) {
+  const { label, tone } = describeReminder(reminder)
+
+  return (
+    <div className="rounded-xl border border-line bg-bg px-3 py-2.5 flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-ink">
+          {reminderTypeLabel(reminder.type)}
+        </span>
+        <span className={`text-[10px] font-semibold uppercase tracking-wider ${tone}`}>
+          {label}
+        </span>
+      </div>
+      <div className="text-[11px] text-ink-3 flex items-center gap-2 flex-wrap">
+        <span>Scheduled {new Date(reminder.scheduledAt).toLocaleString()}</span>
+        {reminder.sentAt && (
+          <>
+            <span>·</span>
+            <span>Sent {new Date(reminder.sentAt).toLocaleString()}</span>
+          </>
+        )}
+      </div>
+      {reminder.lastError && (
+        <p className="text-[11px] text-[#B06A6A]">{reminder.lastError}</p>
+      )}
+    </div>
+  )
+}
+
+function reminderTypeLabel(t: AppointmentReminderType): string {
+  switch (t) {
+    case 'ack_first_prompt':
+      return 'First prompt'
+    case 'ack_second_prompt':
+      return 'Second prompt'
+    case 'ack_deadline':
+      return 'Deadline'
+  }
+}
+
+function describeReminder(r: AppointmentReminder): {
+  label: string
+  tone: string
+} {
+  const status = r.status as AppointmentReminderStatus
+  switch (status) {
+    case 'PENDING':
+      return { label: 'Pending', tone: 'text-ink-3' }
+    case 'CLAIMED':
+      return { label: 'Claimed', tone: 'text-[#7A5F2C]' }
+    case 'SENT':
+      return { label: 'Sent', tone: 'text-[#2A5F30]' }
+    case 'FAILED':
+      return { label: 'Failed', tone: 'text-[#B06A6A]' }
+    case 'SKIPPED':
+      return { label: 'Skipped', tone: 'text-ink-3' }
+  }
+}
+
+function summarizeReminders(reminders: AppointmentReminder[]): string {
+  const sent = reminders.filter(r => r.status === 'SENT').length
+  const failed = reminders.filter(r => r.status === 'FAILED').length
+  const pending = reminders.filter(
+    r => r.status === 'PENDING' || r.status === 'CLAIMED',
+  ).length
+
+  const parts: string[] = []
+  if (sent) parts.push(`${sent} sent`)
+  if (failed) parts.push(`${failed} failed`)
+  if (pending) parts.push(`${pending} pending`)
+  return parts.length ? parts.join(' · ') : 'No delivery activity yet'
+}
+
+/* ------------------------------------------------------------------ */
 /*  Receipt icon                                                       */
 /* ------------------------------------------------------------------ */
 
-/**
- * Small document-with-lines glyph. Lives here because it's only used by
- * the pending-receipt block and doesn't warrant a slot in the shared
- * icon set (which is otherwise all customer-facing).
- */
 function ReceiptIcon({ className }: { className?: string }) {
   return (
     <svg

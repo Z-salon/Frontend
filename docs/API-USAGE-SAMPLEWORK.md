@@ -1,4 +1,4 @@
-# Z-Salon API — Service Usage & Category Sample Work
+# Se'ert API — Service Usage & Category Sample Work
 
 Reference for two related feature areas:
 
