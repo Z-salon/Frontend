@@ -193,3 +193,18 @@ export function isNetworkError(err: unknown): boolean {
   }
   return err instanceof Error && err.name === 'NetworkError';
 }
+
+/**
+ * Backend-first error copy. A validated 4xx carries a message worth showing
+ * ("Payment exceeds the remaining balance", "Amount cannot be reduced below
+ * the amount paid"), so prefer it over our generic fallback.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    if (err.fieldErrors?.length) {
+      return err.fieldErrors.map((f) => f.message).join(' ');
+    }
+    if (err.message && err.message !== 'Validation failed') return err.message;
+  }
+  return fallback;
+}
