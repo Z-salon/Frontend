@@ -1,4 +1,5 @@
 import { ApiError, isNetworkError, isNetworkStatus, normalizeError } from './errors';
+import type { PaginationMeta } from '../types/api';
 
 /**
  * Base path. The server mounts everything under `/api/v1` (API_PREFIX env value).
@@ -39,12 +40,21 @@ export interface RequestOptions {
   /** Internal: set on the retry after refresh to avoid infinite recursion. */
   skipRefresh?: boolean;
   signal?: AbortSignal;
+  /**
+   * Return the full success envelope (`{ success, message, data, meta }`)
+   * instead of unwrapping `data`. Needed for paginated lists, whose `meta`
+   * would otherwise be discarded.
+   */
+  envelope?: boolean;
 }
 
 export interface ApiEnvelope<T> {
   success: true;
   message: string;
   data: T;
+  /** Present on paginated list endpoints. */
+  meta?: PaginationMeta;
+  code?: string | null;
 }
 
 /**
@@ -187,6 +197,9 @@ export async function request<T = unknown>(
 
   console.log('[http]', (opts.method ?? 'GET'), path, body);
   
+  // Envelope-aware callers need `meta`, which the unwrap below throws away.
+  if (opts.envelope) return body as T;
+
   // Unwrap the success envelope when present (§1). A few controllers bypass
   // the envelope; in those cases we return the raw body.
   if (body && typeof body === 'object' && (body as { success?: unknown }).success === true) {
@@ -199,6 +212,15 @@ export async function request<T = unknown>(
 export const http = {
   get: <T>(path: string, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
     request<T>(path, { ...opts, method: 'GET' }),
+
+  /**
+   * Like `get`, but returns the whole success envelope so paginated `meta`
+   * is available to the caller.
+   */
+  getEnvelope: <T>(
+    path: string,
+    opts?: Omit<RequestOptions, 'method' | 'body' | 'envelope'>,
+  ) => request<ApiEnvelope<T>>(path, { ...opts, method: 'GET', envelope: true }),
 
   post: <T>(
     path: string,

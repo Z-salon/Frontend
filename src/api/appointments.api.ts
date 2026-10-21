@@ -3,6 +3,7 @@
 import { http } from './http'
 import type {
   Appointment,
+  AppointmentListResult,
   AppointmentStatus,
   AppointmentStatusHistoryEntry,
   BookingSource,
@@ -17,7 +18,9 @@ import type {
   ResolveAppointmentFollowUpInput,
   AppointmentReminder,
   AppointmentRemindersResponse,
-  AppointmentConfirmationLinkResponse 
+  AppointmentConfirmationLinkResponse, 
+  AppointmentFinancials,
+
 } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -117,7 +120,10 @@ export const appointmentsApi = {
     if (query?.page  != null) qs.set('page',  String(query.page))
     if (query?.limit != null) qs.set('limit', String(query.limit))
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
-    return http.get<Appointment[]>(
+    // The list envelope nests the array: `data: { data: [...], meta }`.
+    // `http.get` unwraps the outer `data`, so the caller receives
+    // `{ data: Appointment[], meta }`.
+    return http.get<AppointmentListResult>(
       `/businesses/${businessId}/appointments${suffix}`,
     )
   },
@@ -133,6 +139,18 @@ export const appointmentsApi = {
   get: (businessId: string, appointmentId: string) =>
     http.get<Appointment>(
       `/businesses/${businessId}/appointments/${appointmentId}`,
+    ),
+
+  /**
+   * Money figures for one appointment. The server computes every amount,
+   * including the `refundable` ceiling used by the Create Refund form —
+   * the client never derives it from the other fields.
+   *
+   * `GET /businesses/:businessId/appointments/:id/financials`
+   */
+  financials: (businessId: string, appointmentId: string) =>
+    http.get<AppointmentFinancials>(
+      `/businesses/${businessId}/appointments/${appointmentId}/financials`,
     ),
 
   /* ---------------------------------------------------------------- */

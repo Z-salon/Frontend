@@ -1,4 +1,4 @@
-import type { Customer, StaffMember, Service, Branch, Appointment, FeedbackItem, Transaction, ExpenseCategory, PaymentMethod, AppSettings } from '../types'
+import type { Customer, StaffMember, Service, Branch, Appointment, FeedbackItem, Transaction, PaymentMethod, AppSettings } from '../types'
 
 const defaultHours = [
   { day: 'Monday',    open: true,  from: '09:00', to: '17:00' },
@@ -250,18 +250,6 @@ export const initialAppointments: Appointment[] = [
     notes: 'Bride + 2 bridesmaids. Arrive 15 min early.',
     customTitle: 'Bridal Photoshoot',
   },
-]
-
-export const expenseCategories: ExpenseCategory[] = [
-  { id: 'ec1', name: 'Rent',             active: true  },
-  { id: 'ec2', name: 'Supplies',         active: true  },
-  { id: 'ec3', name: 'Utilities',        active: true  },
-  { id: 'ec4', name: 'Maintenance',      active: true  },
-  { id: 'ec5', name: 'Marketing',        active: true  },
-  { id: 'ec6', name: 'Cleaning',         active: true  },
-  { id: 'ec7', name: 'Laundry',          active: true  },
-  { id: 'ec8', name: 'Product Purchases',active: true  },
-  { id: 'ec9', name: 'Equipment',        active: false },
 ]
 
 export const paymentMethods: PaymentMethod[] = [
